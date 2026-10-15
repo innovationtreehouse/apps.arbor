@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { UrlStore, ConfigStore, AuditStore, UrlEntry, AuditRecord } from "@arbor/db";
+import type { UrlStore, ConfigStore, AuditStore, UrlEntry, AuditRecord, SocialPost, SocialPostStore } from "@arbor/db";
 
 // ---------------------------------------------------------------------------
 // Shared mock stores
@@ -24,7 +24,14 @@ const mockAuditStore: AuditStore = {
   listByThread: vi.fn(),
 };
 
-const stores = { urlStore: mockUrlStore, configStore: mockConfigStore, auditStore: mockAuditStore };
+const mockSocialPostStore = { listOpen: vi.fn() } as unknown as SocialPostStore;
+
+const stores = {
+  urlStore: mockUrlStore,
+  configStore: mockConfigStore,
+  auditStore: mockAuditStore,
+  socialPostStore: mockSocialPostStore,
+};
 
 // Capture what gets POSTed to response_url
 let postedResponse: { response_type: string; text: string } | null = null;
@@ -644,6 +651,19 @@ describe("version", () => {
 // ---------------------------------------------------------------------------
 // unknown subcommand + error handling
 // ---------------------------------------------------------------------------
+
+describe("social-posts", () => {
+  it("says so when nothing is open", async () => {
+    vi.mocked(mockSocialPostStore.listOpen).mockResolvedValueOnce([]);
+    expect(await runCommand("social-posts")).toBe("No open posts.");
+  });
+
+  it("lists open posts one per line", async () => {
+    const post = { id: 7, platform: "x", status: "approved", scheduled_at: "2026-01-01T17:00:00.000Z", proposer_id: "U_P" };
+    vi.mocked(mockSocialPostStore.listOpen).mockResolvedValueOnce([post as SocialPost]);
+    expect(await runCommand("social-posts")).toBe("#7 x approved 2026-01-01T17:00:00.000Z <@U_P>");
+  });
+});
 
 describe("unknown subcommand", () => {
   it("returns unknown subcommand message", async () => {

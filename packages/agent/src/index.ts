@@ -3,7 +3,7 @@ import {
   ReceiveMessageCommand,
   DeleteMessageCommand,
 } from "@aws-sdk/client-sqs";
-import { PostgresConfigStore, PostgresAuditStore, PostgresUrlStore } from "@arbor/db";
+import { PostgresConfigStore, PostgresAuditStore, PostgresUrlStore, PostgresSocialPostStore } from "@arbor/db";
 import { createAuditLogger } from "@arbor/logger";
 import { fetchChannelHistory, fetchThreadHistory, fetchSlackImages, postMessage, postEphemeral } from "./slack.js";
 import type { SlackFile } from "./slack.js";
@@ -11,6 +11,7 @@ import { runAgent } from "./agent.js";
 import { buildPrompt, buildSystemPrompt } from "./prompt.js";
 import { BatchBuffer, type BatchEvent } from "./batch-buffer.js";
 import { processAdminCommand } from "./admin.js";
+import { processSocialPostMessage } from "./social-posts.js";
 
 export const NO_REPLY_SENTINEL = "__NO_REPLY__";
 
@@ -30,6 +31,7 @@ const sqsClient = new SQSClient({ region: process.env.AWS_REGION });
 const configStore = new PostgresConfigStore(DATABASE_URL);
 const urlStore = new PostgresUrlStore(DATABASE_URL);
 const auditStore = new PostgresAuditStore(DATABASE_URL);
+const socialPostStore = new PostgresSocialPostStore(DATABASE_URL);
 const auditLogger = createAuditLogger(auditStore);
 const IDLE_TIMEOUT_MS =
   parseInt(process.env.IDLE_TIMEOUT ?? "15", 10) * 60 * 1000;
@@ -135,8 +137,10 @@ async function main(): Promise<void> {
 
     try {
       const parsed = JSON.parse(sqsMessage.Body!);
-      if (parsed.type === "admin_command") {
-        await processAdminCommand(parsed, { urlStore, configStore, auditStore });
+      if (typeof parsed.type === "string" && parsed.type.startsWith("social_post")) {
+        await processSocialPostMessage(parsed, { socialPostStore, configStore, auditStore });
+      } else if (parsed.type === "admin_command") {
+        await processAdminCommand(parsed, { urlStore, configStore, auditStore, socialPostStore });
       } else {
         const event: SlackEvent = parsed;
         if (event.holdoff) {

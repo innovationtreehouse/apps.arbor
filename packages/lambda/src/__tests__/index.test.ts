@@ -32,7 +32,8 @@ const mockAuditStore: AuditStore = {
   listByThread: vi.fn().mockResolvedValue([]),
 };
 
-vi.mock("@arbor/db", () => ({
+vi.mock("@arbor/db", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   PostgresUrlStore: vi.fn().mockImplementation(function () {
     return mockStore;
   }),

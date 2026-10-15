@@ -2,7 +2,10 @@ export type { UrlEntry, NewUrlEntry, UrlStore, ConfigStore, AuditRecord, NewAudi
 export { PostgresUrlStore } from "./postgres-store.js";
 export { PostgresConfigStore } from "./config-store.js";
 export { PostgresAuditStore } from "./audit-store.js";
-export { SqliteUrlStore, SqliteConfigStore, SqliteAuditStore } from "./sqlite-stores.js";
+export { PostgresSocialPostStore } from "./social-post-store.js";
+export { SqliteUrlStore, SqliteConfigStore, SqliteAuditStore, SqliteSocialPostStore } from "./sqlite-stores.js";
 export type { StoreSet } from "./create-stores.js";
 export { createStores } from "./create-stores.js";
-export { urlConfig, agentConfig, auditLog } from "./schema.js";
+export { urlConfig, agentConfig, auditLog, socialPosts } from "./schema.js";
+export type { SocialPlatform, SocialPostStatus, SocialPost, NewSocialPost, SocialPostPatch, SocialPostStore, SocialPostProposed, SocialPostEdited, SocialPostActionName, SocialPostAction, SocialPostNudge, SocialPostMessage } from "./social-store.js";
+export { SOCIAL_ACTIONS, SOCIAL_MODAL_CALLBACK_ID, SOCIAL_PULL_MODAL_CALLBACK_ID, SOCIAL_ACTION_PREFIX } from "./social-store.js";

@@ -6,6 +6,7 @@ Arbor runs Squirrel, a Slack bot that uses the Claude Agent SDK to answer questi
 
 - [Architecture Design](docs/design.md) — system design, component diagram, and technology decisions
 - [How It Works](docs/operation.md) — end-to-end walkthrough of message flow, agent behavior, and admin commands
+- [Social Post Approval](docs/social-posts.md) — `/propose-post` flow: modal, agentic review, Slack approval thread, manual publish, Request pull
 - [AWS Setup](docs/aws-setup.md) — step-by-step procedure for provisioning all AWS infrastructure
 - [Runtime Configuration](docs/configuration.md) — environment variables for Lambda and the ECS agent
 - [GitHub Actions Configuration](docs/github-configuration.md) — repository secrets and variables for the Claude workflow

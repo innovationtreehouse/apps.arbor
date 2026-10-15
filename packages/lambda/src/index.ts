@@ -8,6 +8,7 @@ import {
 import type { APIGatewayProxyHandlerV2 } from "aws-lambda";
 import { ChannelRateLimiter } from "./rate-limiter.js";
 import { PostgresConfigStore } from "@arbor/db";
+import { handleInteraction, handleNudgeTick, handleProposePost } from "./social.js";
 
 const sqsClient = new SQSClient({});
 const ecsClient = new ECSClient({});
@@ -52,11 +53,18 @@ function verifySlackSignature(
 // Handler
 // ---------------------------------------------------------------------------
 
+// API Gateway for Slack; the social-nudge EventBridge rule invokes the Lambda directly.
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+  if ((event as unknown as { source?: string }).source === "aws.events") {
+    await handleNudgeTick(enqueue);
+    return { statusCode: 200, body: "" };
+  }
   const rawBody = event.body ?? "";
   const body = event.isBase64Encoded
     ? Buffer.from(rawBody, "base64").toString("utf8")
     : rawBody;
+  const path = event.rawPath;
+
   const timestamp = event.headers["x-slack-request-timestamp"] ?? "";
   const signature = event.headers["x-slack-signature"] ?? "";
 
@@ -64,13 +72,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return { statusCode: 401, body: "Invalid signature" };
   }
 
-  const path = event.rawPath;
-
   if (path === "/slack/events") {
     return handleEvent(body);
   }
   if (path === "/slack/commands") {
     return handleCommand(body);
+  }
+  if (path === "/slack/interactions") {
+    return handleInteraction(body, enqueue);
   }
 
   return { statusCode: 404, body: "Not found" };
@@ -183,6 +192,13 @@ async function handleEvent(rawBody: string) {
   return { statusCode: 200, body: "" };
 }
 
+async function enqueue(msg: Record<string, unknown>) {
+  await ensureAgentRunning();
+  await sqsClient.send(
+    new SendMessageCommand({ QueueUrl: process.env.SQS_QUEUE_URL!, MessageBody: JSON.stringify(msg) })
+  );
+}
+
 async function ensureAgentRunning() {
   const listResult = await ecsClient.send(
     new ListTasksCommand({
@@ -216,6 +232,7 @@ async function ensureAgentRunning() {
 
 async function handleCommand(rawBody: string) {
   const params = new URLSearchParams(rawBody);
+  if (params.get("command") === "/propose-post") return handleProposePost(params);
   const userId = params.get("user_id") ?? "";
   const text = (params.get("text") ?? "").trim();
   const responseUrl = params.get("response_url") ?? "";
@@ -247,6 +264,7 @@ async function handleCommand(rawBody: string) {
         "• `/squirrel-admin audit-thread <channel> <thread_ts>` — show interactions for a thread\n" +
         "• `/squirrel-admin token-limit [<channel|default> [<limit>]]` — show or set per-channel token limit\n" +
         "• `/squirrel-admin channel-messages [on|off]` — show or set channel and thread message responses (default: off)\n" +
+        "• `/squirrel-admin social-posts` — list open social post proposals\n" +
         "• `/squirrel-admin check` — verify connectivity to all data sources\n" +
         "• `/squirrel-admin help` — show this message\n" +
         "_Built `" + GIT_SHA + "` at " + BUILD_TIME + "_"

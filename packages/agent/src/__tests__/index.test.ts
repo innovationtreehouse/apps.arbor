@@ -26,6 +26,13 @@ vi.mock("@arbor/db", () => ({
   PostgresUrlStore: vi.fn().mockImplementation(function () {
     return {};
   }),
+  PostgresSocialPostStore: vi.fn().mockImplementation(function () {
+    return {};
+  }),
+}));
+
+vi.mock("../social-posts.js", () => ({
+  processSocialPostMessage: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../admin.js", () => ({
