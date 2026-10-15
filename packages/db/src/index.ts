@@ -6,3 +6,4 @@ export { SqliteUrlStore, SqliteConfigStore, SqliteAuditStore } from "./sqlite-st
 export type { StoreSet } from "./create-stores.js";
 export { createStores } from "./create-stores.js";
 export { urlConfig, agentConfig, auditLog } from "./schema.js";
+export type { SocialPlatform, SocialPostStatus, SocialPost, NewSocialPost, SocialPostPatch, SocialPostStore } from "./social-store.js";
