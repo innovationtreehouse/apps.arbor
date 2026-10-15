@@ -7,4 +7,5 @@ export { SqliteUrlStore, SqliteConfigStore, SqliteAuditStore, SqliteSocialPostSt
 export type { StoreSet } from "./create-stores.js";
 export { createStores } from "./create-stores.js";
 export { urlConfig, agentConfig, auditLog, socialPosts } from "./schema.js";
-export type { SocialPlatform, SocialPostStatus, SocialPost, NewSocialPost, SocialPostPatch, SocialPostStore } from "./social-store.js";
+export type { SocialPlatform, SocialPostStatus, SocialPost, NewSocialPost, SocialPostPatch, SocialPostStore, SocialPostProposed, SocialPostEdited, SocialPostActionName, SocialPostAction, SocialPostNudge, SocialPostMessage } from "./social-store.js";
+export { SOCIAL_ACTIONS, SOCIAL_MODAL_CALLBACK_ID, SOCIAL_PULL_MODAL_CALLBACK_ID, SOCIAL_ACTION_PREFIX } from "./social-store.js";
