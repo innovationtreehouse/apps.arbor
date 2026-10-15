@@ -8,7 +8,7 @@ import {
 import type { APIGatewayProxyHandlerV2 } from "aws-lambda";
 import { ChannelRateLimiter } from "./rate-limiter.js";
 import { PostgresConfigStore } from "@arbor/db";
-import { handleInteraction, handleProposePost } from "./social.js";
+import { handleInteraction, handleNudgeTick, handleProposePost } from "./social.js";
 
 const sqsClient = new SQSClient({});
 const ecsClient = new ECSClient({});
@@ -53,23 +53,17 @@ function verifySlackSignature(
 // Handler
 // ---------------------------------------------------------------------------
 
+// API Gateway for Slack; the social-nudge EventBridge rule invokes the Lambda directly.
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+  if ((event as unknown as { source?: string }).source === "aws.events") {
+    await handleNudgeTick(enqueue);
+    return { statusCode: 200, body: "" };
+  }
   const rawBody = event.body ?? "";
   const body = event.isBase64Encoded
     ? Buffer.from(rawBody, "base64").toString("utf8")
     : rawBody;
   const path = event.rawPath;
-
-  // EventBridge cron: shared-secret header instead of a Slack signature.
-  if (path === "/cron/social-nudge") {
-    const given = Buffer.from(event.headers["x-cron-secret"] ?? "");
-    const expected = Buffer.from(process.env.CRON_SECRET ?? "");
-    if (!expected.length || given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) {
-      return { statusCode: 401, body: "Unauthorized" };
-    }
-    await enqueue({ type: "social_post_nudge" });
-    return { statusCode: 200, body: "" };
-  }
 
   const timestamp = event.headers["x-slack-request-timestamp"] ?? "";
   const signature = event.headers["x-slack-signature"] ?? "";
@@ -270,6 +264,7 @@ async function handleCommand(rawBody: string) {
         "• `/squirrel-admin audit-thread <channel> <thread_ts>` — show interactions for a thread\n" +
         "• `/squirrel-admin token-limit [<channel|default> [<limit>]]` — show or set per-channel token limit\n" +
         "• `/squirrel-admin channel-messages [on|off]` — show or set channel and thread message responses (default: off)\n" +
+        "• `/squirrel-admin social-posts` — list open social post proposals\n" +
         "• `/squirrel-admin check` — verify connectivity to all data sources\n" +
         "• `/squirrel-admin help` — show this message\n" +
         "_Built `" + GIT_SHA + "` at " + BUILD_TIME + "_"

@@ -140,7 +140,7 @@ async function main(): Promise<void> {
       if (typeof parsed.type === "string" && parsed.type.startsWith("social_post")) {
         await processSocialPostMessage(parsed, { socialPostStore, configStore, auditStore });
       } else if (parsed.type === "admin_command") {
-        await processAdminCommand(parsed, { urlStore, configStore, auditStore });
+        await processAdminCommand(parsed, { urlStore, configStore, auditStore, socialPostStore });
       } else {
         const event: SlackEvent = parsed;
         if (event.holdoff) {

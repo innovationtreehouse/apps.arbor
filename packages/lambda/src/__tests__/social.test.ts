@@ -5,12 +5,14 @@ import { ECSClient, ListTasksCommand } from "@aws-sdk/client-ecs";
 import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 
 const mockSocialGet = vi.fn();
-vi.mock("@arbor/db", () => ({
+const mockListDue = vi.fn();
+vi.mock("@arbor/db", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   PostgresConfigStore: vi.fn().mockImplementation(function () {
     return { get: vi.fn(), set: vi.fn() };
   }),
   PostgresSocialPostStore: vi.fn().mockImplementation(function () {
-    return { get: mockSocialGet };
+    return { get: mockSocialGet, listDueForNudge: mockListDue };
   }),
 }));
 vi.mock("../rate-limiter.js", () => ({
@@ -28,7 +30,6 @@ vi.stubGlobal("fetch", fetchMock);
 process.env.SLACK_SIGNING_SECRET = "secret";
 process.env.SQS_QUEUE_URL = "https://sqs.test/queue";
 process.env.SLACK_BOT_TOKEN = "xoxb-test";
-process.env.CRON_SECRET = "cron-secret";
 
 function slackEvent(path: string, body: string) {
   const timestamp = String(Math.floor(Date.now() / 1000));
@@ -45,6 +46,7 @@ function submission(fields: { platform: string; content: string; media_url?: str
     type: "view_submission",
     user: { id: "U1" },
     view: {
+      id: "V1",
       callback_id: "social_post_modal",
       private_metadata: JSON.stringify(meta),
       state: {
@@ -66,6 +68,8 @@ beforeEach(() => {
   ecsMock.on(ListTasksCommand).resolves({ taskArns: ["arn:task:1"] });
   sqsMock.on(SendMessageCommand).resolves({});
   fetchMock.mockReset().mockResolvedValue({ json: async () => ({ ok: true }) });
+  mockSocialGet.mockReset();
+  mockListDue.mockReset();
 });
 
 describe("social", () => {
@@ -87,14 +91,14 @@ describe("social", () => {
     const res = await interaction(submission({ platform: "x", content: "hello", at: future }));
     expect(res).toMatchObject({ statusCode: 200, body: "" });
     expect(sent()).toEqual([{
-      type: "social_post_proposed", platform: "x", content: "hello", media_url: null,
+      type: "social_post_proposed", view_id: "V1", platform: "x", content: "hello", media_url: null,
       scheduled_at: new Date(future * 1000).toISOString(), proposer_id: "U1", response_url: "https://r",
     }]);
   });
 
   it("submission with post_id enqueues social_post_edited", async () => {
-    await interaction(submission({ platform: "facebook", content: "hi", at: future }, { response_url: "https://r", post_id: 7 }));
-    expect(sent()[0]).toMatchObject({ type: "social_post_edited", post_id: 7, user_id: "U1" });
+    await interaction(submission({ platform: "facebook", content: "hi", at: future }, { response_url: "https://r", post_id: 7, version: "v7" }));
+    expect(sent()[0]).toMatchObject({ type: "social_post_edited", post_id: 7, version: "v7", user_id: "U1", response_url: "https://r" });
   });
 
   it("instagram without media returns field errors", async () => {
@@ -111,30 +115,93 @@ describe("social", () => {
   it("block action enqueues social_post_action", async () => {
     const res = await interaction({
       type: "block_actions", user: { id: "U2" }, response_url: "https://r2",
-      actions: [{ action_id: "social_post:approve", value: "42" }],
+      actions: [{ action_id: "social_post:approve", value: "42:2026-01-01T00:00:00.000Z" }],
     });
     expect(res.statusCode).toBe(200);
-    expect(sent()).toEqual([{ type: "social_post_action", post_id: 42, action: "approve", user_id: "U2", response_url: "https://r2" }]);
+    expect(sent()).toEqual([{
+      type: "social_post_action", post_id: 42, version: "2026-01-01T00:00:00.000Z", action: "approve", user_id: "U2", response_url: "https://r2",
+    }]);
   });
 
-  it("edit action opens a prefilled modal", async () => {
-    mockSocialGet.mockResolvedValue({ id: 5, platform: "x", content: "old", media_url: null, scheduled_at: new Date(future * 1000).toISOString() });
+  it("edit action opens a prefilled modal for the proposer", async () => {
+    mockSocialGet.mockResolvedValue({ id: 5, proposer_id: "U1", status: "objected", platform: "x", content: "old", media_url: null, scheduled_at: new Date(future * 1000).toISOString() });
     await interaction({
       type: "block_actions", user: { id: "U1" }, trigger_id: "T2", response_url: "https://r",
-      actions: [{ action_id: "social_post:edit", value: "5" }],
+      actions: [{ action_id: "social_post:edit", value: "5:v5" }],
     });
     expect(mockSocialGet).toHaveBeenCalledWith(5);
-    const { view } = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(JSON.parse(view.private_metadata).post_id).toBe(5);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://slack.com/api/views.open");
+    const { view } = JSON.parse(init.body);
+    expect(JSON.parse(view.private_metadata)).toEqual({ post_id: 5, version: "v5", response_url: "https://r" });
     expect(view.blocks[2].element.initial_value).toBe("old");
     expect(sent()).toHaveLength(0);
   });
 
-  it("cron route rejects a bad secret and enqueues with a good one", async () => {
-    const cron = (secret: string) => call({ rawPath: "/cron/social-nudge", body: "", headers: { "x-cron-secret": secret } });
-    expect((await cron("wrong")).statusCode).toBe(401);
+  it("edit by a non-proposer or on a posted post posts an ephemeral and opens nothing", async () => {
+    const edit = (user: string) => interaction({
+      type: "block_actions", user: { id: user }, trigger_id: "T2", response_url: "https://r",
+      actions: [{ action_id: "social_post:edit", value: "5:v5" }],
+    });
+    mockSocialGet.mockResolvedValue({ id: 5, proposer_id: "U1", status: "in_review" });
+    await edit("U9");
+    mockSocialGet.mockResolvedValue({ id: 5, proposer_id: "U1", status: "posted" });
+    await edit("U1");
+    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual(["https://r", "https://r"]);
+    expect(fetchMock.mock.calls.map((c) => JSON.parse(c[1].body).text)).toEqual(["Only the proposer can edit", "This post is posted"]);
     expect(sent()).toHaveLength(0);
-    expect((await cron("cron-secret")).statusCode).toBe(200);
+  });
+
+  it("request_pull opens the reason modal and its submission enqueues the action", async () => {
+    await interaction({
+      type: "block_actions", user: { id: "U3" }, trigger_id: "T3", response_url: "https://r3",
+      actions: [{ action_id: "social_post:request_pull", value: "9:v9" }],
+    });
+    const { view } = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(view.callback_id).toBe("social_pull_modal");
+    expect(view.blocks.map((b: any) => b.block_id)).toEqual(["reason"]);
+    expect(sent()).toHaveLength(0);
+
+    await interaction({
+      type: "view_submission", user: { id: "U3" },
+      view: { callback_id: "social_pull_modal", private_metadata: view.private_metadata, state: { values: { reason: { reason: { value: " typo " } } } } },
+    });
+    expect(sent()).toEqual([{
+      type: "social_post_action", action: "request_pull", post_id: 9, version: "v9", user_id: "U3", response_url: "https://r3", reason: "typo",
+    }]);
+  });
+
+  it("unknown action or garbage value is ignored", async () => {
+    for (const a of [{ action_id: "social_post:delete", value: "1:v" }, { action_id: "social_post:approve", value: "42" }, { action_id: "social_post:approve", value: "abc:v" }]) {
+      expect((await interaction({ type: "block_actions", user: { id: "U1" }, actions: [a] })).statusCode).toBe(200);
+    }
+    expect(sent()).toHaveLength(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("invalid platform is a modal error", async () => {
+    const res = await interaction(submission({ platform: "tiktok", content: "hi", at: future }));
+    expect(JSON.parse(res.body).errors).toEqual({ platform: expect.any(String) });
+  });
+
+  it("views.open failure returns an ephemeral from /propose-post", async () => {
+    fetchMock.mockResolvedValue({ json: async () => ({ ok: false, error: "expired_trigger_id" }) });
+    const body = new URLSearchParams({ command: "/propose-post", user_id: "U1", trigger_id: "T1", response_url: "https://r" }).toString();
+    const res = await call(slackEvent("/slack/commands", body));
+    expect(JSON.parse(res.body)).toEqual({ response_type: "ephemeral", text: "Couldn't open the form (expired_trigger_id)" });
+  });
+
+  it("EventBridge tick with nothing due touches neither ECS nor SQS", async () => {
+    mockListDue.mockResolvedValue([]);
+    expect((await call({ source: "aws.events" })).statusCode).toBe(200);
+    expect(ecsMock.calls()).toHaveLength(0);
+    expect(sqsMock.calls()).toHaveLength(0);
+  });
+
+  it("EventBridge tick with due posts enqueues a nudge", async () => {
+    mockListDue.mockResolvedValue([{ id: 1 }]);
+    await call({ source: "aws.events" });
     expect(sent()).toEqual([{ type: "social_post_nudge" }]);
+    expect(ecsMock.commandCalls(ListTasksCommand)).toHaveLength(1);
   });
 });

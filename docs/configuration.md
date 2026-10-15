@@ -22,7 +22,6 @@ Sensitive values are stored in AWS Secrets Manager under the `arbor/` prefix and
 | `AGENT_NAME` | No | `Squirrel` | Bot display name shown in admin help text |
 | `MAX_URL_COUNT` | No | `100` | Maximum number of URLs allowed in the allowlist |
 | `SLACK_BOT_TOKEN` | Yes | — | Slack bot OAuth token (`xoxb-…`); the Lambda calls `views.open` for `/propose-post` |
-| `CRON_SECRET` | Yes | — | Shared secret checked against the `x-cron-secret` header on `/cron/social-nudge` |
 
 ---
 
@@ -45,8 +44,8 @@ The agent container also runs the `mcp-url-fetcher` MCP server in-process, which
 | `THREAD_HISTORY_LIMIT` | No | `50` | Maximum number of prior Slack messages to include as thread context |
 | `URL_POLL_INTERVAL_S` | No | `60` | How often the URL Fetcher MCP server refreshes the allowlist from the database, in seconds |
 | `MAX_MCP_RETRIES` | No | `2` | Number of times to retry a failed `runAgent()` call before giving up; uses exponential backoff starting at 1s |
-| `SOCIAL_APPROVALS_CHANNEL` | No | — | Slack channel ID where `/propose-post` drafts are reviewed and approved; see [Social Post Approval](social-posts.md) |
-| `SOCIAL_APPROVER_IDS` | No | — | Comma-separated Slack user IDs permitted to approve, object to, and mark social posts posted |
+| `SOCIAL_APPROVALS_CHANNEL` | Yes (for social posts) | — | Slack channel ID where `/propose-post` drafts are reviewed and approved; proposals are refused if unset; see [Social Post Approval](social-posts.md) |
+| `SOCIAL_APPROVER_IDS` | Yes (for social posts) | — | Comma-separated Slack user IDs permitted to approve, object to, mark posted, and mark pulled; proposals are refused if empty |
 
 ---
 

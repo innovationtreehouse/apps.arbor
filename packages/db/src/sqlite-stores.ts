@@ -54,6 +54,7 @@ function openDb(filePath: string): SqliteDb {
       "media_url" text,
       "scheduled_at" text NOT NULL,
       "proposer_id" text NOT NULL,
+      "slack_view_id" text UNIQUE,
       "status" text NOT NULL DEFAULT 'pending_review',
       "review" text,
       "channel" text,
@@ -62,6 +63,10 @@ function openDb(filePath: string): SqliteDb {
       "objected_by" text,
       "posted_by" text,
       "posted_at" text,
+      "pull_reason" text,
+      "pull_requested_by" text,
+      "pulled_by" text,
+      "pulled_at" text,
       "nudged_at" text,
       "created_at" text NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
       "updated_at" text NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
@@ -187,7 +192,8 @@ export class SqliteAuditStore implements AuditStore {
 // Timestamps are normalized to toISOString() so text comparison == time order.
 const iso = (s: string) => new Date(s).toISOString();
 const isoOrNull = (s: string | null | undefined) => (s == null ? s : iso(s));
-const TERMINAL: SocialPostStatus[] = ["posted", "withdrawn"];
+const TERMINAL: SocialPostStatus[] = ["posted", "pulled", "withdrawn"];
+const NOT_NEAR: SocialPostStatus[] = ["pending_review", "pulled", "withdrawn"];
 
 export class SqliteSocialPostStore implements SocialPostStore {
   constructor(private db: SqliteDb) {}
@@ -196,9 +202,16 @@ export class SqliteSocialPostStore implements SocialPostStore {
     const row = this.db
       .insert(schema.socialPosts)
       .values({ ...post, scheduled_at: iso(post.scheduled_at) })
+      .onConflictDoNothing({ target: schema.socialPosts.slack_view_id })
       .returning()
       .get();
-    return toSocialPost(row);
+    if (row) return toSocialPost(row);
+    const existing = this.db
+      .select()
+      .from(schema.socialPosts)
+      .where(eq(schema.socialPosts.slack_view_id, post.slack_view_id!))
+      .get();
+    return toSocialPost(existing!);
   }
 
   async get(id: number): Promise<SocialPost | undefined> {
@@ -206,19 +219,26 @@ export class SqliteSocialPostStore implements SocialPostStore {
     return row && toSocialPost(row);
   }
 
-  async update(id: number, patch: SocialPostPatch): Promise<SocialPost> {
+  async update(id: number, patch: SocialPostPatch, expectUpdatedAt?: string): Promise<SocialPost | undefined> {
     const row = this.db
       .update(schema.socialPosts)
       .set({
         ...patch,
         scheduled_at: patch.scheduled_at ? iso(patch.scheduled_at) : undefined,
         posted_at: isoOrNull(patch.posted_at),
+        pulled_at: isoOrNull(patch.pulled_at),
         nudged_at: isoOrNull(patch.nudged_at),
         updated_at: new Date().toISOString(),
       })
-      .where(eq(schema.socialPosts.id, id))
+      .where(
+        and(
+          eq(schema.socialPosts.id, id),
+          expectUpdatedAt === undefined ? undefined : eq(schema.socialPosts.updated_at, expectUpdatedAt)
+        )
+      )
       .returning()
       .get();
+    if (!row && expectUpdatedAt !== undefined) return undefined;
     if (!row) throw new Error(`social post ${id} not found`);
     return toSocialPost(row);
   }
@@ -241,7 +261,7 @@ export class SqliteSocialPostStore implements SocialPostStore {
       .where(
         and(
           eq(schema.socialPosts.platform, platform),
-          notInArray(schema.socialPosts.status, TERMINAL),
+          notInArray(schema.socialPosts.status, NOT_NEAR),
           between(
             schema.socialPosts.scheduled_at,
             new Date(t - windowMs).toISOString(),

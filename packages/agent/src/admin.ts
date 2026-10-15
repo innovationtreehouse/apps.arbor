@@ -1,4 +1,4 @@
-import type { UrlStore, ConfigStore, AuditStore } from "@arbor/db";
+import type { UrlStore, ConfigStore, AuditStore, SocialPostStore } from "@arbor/db";
 import { buildSystemPrompt, defaultSystemPrompt, DEFAULT_USER_PROMPT_TEMPLATE } from "./prompt.js";
 
 interface AdminCommand {
@@ -13,13 +13,14 @@ interface Stores {
   urlStore: UrlStore;
   configStore: ConfigStore;
   auditStore: AuditStore;
+  socialPostStore: SocialPostStore;
 }
 
 const MAX_URL_COUNT = parseInt(process.env.MAX_URL_COUNT ?? "100", 10);
 
 export async function processAdminCommand(cmd: AdminCommand, stores: Stores): Promise<void> {
   const { subcommand, args, userId, responseUrl } = cmd;
-  const { urlStore, configStore, auditStore } = stores;
+  const { urlStore, configStore, auditStore, socialPostStore } = stores;
 
   let text: string;
   try {
@@ -59,6 +60,9 @@ export async function processAdminCommand(cmd: AdminCommand, stores: Stores): Pr
         break;
       case "version":
         text = handleVersion();
+        break;
+      case "social-posts":
+        text = await handleSocialPosts(socialPostStore);
         break;
       default:
         text = `Unknown subcommand: \`${subcommand}\`. Try \`/squirrel-admin help\`.`;
@@ -307,6 +311,12 @@ async function handlePrompt(args: string[], configStore: ConfigStore): Promise<s
   }
 
   return `Unknown prompt subcommand: \`${subcmd}\`. Available: \`show [system|user]\`, \`set system|user <text>\`, \`reset [system|user]\`.`;
+}
+
+async function handleSocialPosts(store: SocialPostStore): Promise<string> {
+  const posts = await store.listOpen();
+  if (posts.length === 0) return "No open posts.";
+  return posts.map((p) => `#${p.id} ${p.platform} ${p.status} ${p.scheduled_at} <@${p.proposer_id}>`).join("\n");
 }
 
 function handleVersion(): string {

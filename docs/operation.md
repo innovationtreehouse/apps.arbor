@@ -95,6 +95,7 @@ The allowlist is managed through the `/squirrel-admin` Slack slash command. Only
 | `/squirrel-admin model [<model-id>]` | Show or set the active Claude model |
 | `/squirrel-admin audit [<limit>]` | Show recent agent interactions (default 10, max 50) |
 | `/squirrel-admin audit-thread <channel> <thread_ts>` | Show all interactions for a specific thread |
+| `/squirrel-admin social-posts` | List open social posts (id, platform, status, scheduled time, proposer) |
 | `/squirrel-admin help` | Show command reference |
 
 All responses are ephemeral (visible only to the command sender). The `add` command enforces a configurable limit (`MAX_URL_COUNT`, default 100) to prevent runaway table growth. All URLs must use HTTPS.
@@ -186,5 +187,7 @@ Thread history older than the last message is included for context but the curre
 ## Concurrency
 
 The Lambda scales horizontally. Multiple simultaneous Slack events can arrive and each Lambda invocation independently checks for a running ECS task. If two Lambda invocations race and both find no task, both will call `RunTask` — ECS handles this gracefully by starting two tasks. The second task will idle and shut down after `IDLE_TIMEOUT` without receiving work (since SQS delivers each message to only one consumer).
+
+Social post transitions are safe under two tasks: each is a conditional update on `updated_at`, and stale clicks are refused (see [Social Post Approval](social-posts.md)).
 
 This is intentional: simplicity over strict singleton enforcement. If strict single-task behavior is required, a PostgreSQL advisory lock or a short-TTL row in `url_config` could serve as a distributed lock around `RunTask`.

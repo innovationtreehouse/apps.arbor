@@ -499,32 +499,7 @@ fi
 # from this machine, uncomment the next line:
 # (cd packages/db && DATABASE_URL="$DATABASE_URL" npm run db:migrate)
 #
-# Otherwise, apply manually. The current schema (packages/db/drizzle/):
-#
-#   CREATE TABLE IF NOT EXISTS url_config (
-#     url         TEXT PRIMARY KEY,
-#     description TEXT        NOT NULL,
-#     enabled     BOOLEAN     NOT NULL DEFAULT true,
-#     added_by    TEXT        NOT NULL,
-#     added_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
-#   );
-#
-#   CREATE TABLE IF NOT EXISTS agent_config (
-#     key   TEXT PRIMARY KEY,
-#     value TEXT NOT NULL
-#   );
-#
-#   CREATE TABLE IF NOT EXISTS audit_log (
-#     id          SERIAL PRIMARY KEY,
-#     channel     TEXT        NOT NULL,
-#     thread_ts   TEXT        NOT NULL,
-#     user_id     TEXT        NOT NULL,
-#     prompt      TEXT        NOT NULL,
-#     response    TEXT        NOT NULL,
-#     model       TEXT,
-#     duration_ms INTEGER     NOT NULL,
-#     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-#   );
+# Otherwise, apply packages/db/drizzle/*.sql in order (the migrate task does this).
 
 
 # =============================================================================
@@ -920,29 +895,43 @@ These steps are done in the [Slack API console](https://api.slack.com/apps) and 
 
 Per environment, after Part 2. See [Social Post Approval](social-posts.md).
 
-1. **Migration.** Apply `packages/db/drizzle/0001_social_posts.sql` (the normal migrate task or `npm run db:migrate` includes it).
-2. **Lambda env.** Add `SLACK_BOT_TOKEN` and `CRON_SECRET` to the Lambda configuration; add `SOCIAL_APPROVALS_CHANNEL` and `SOCIAL_APPROVER_IDS` to the agent task definition.
-3. **API Gateway routes.** Add `POST /slack/interactions` and `POST /cron/social-nudge` with the same Lambda integration as the other routes.
-4. **EventBridge schedule.** Scheduler cannot call an HTTP endpoint directly; use an EventBridge connection plus API destination, and a schedule rule that targets it every 15 minutes. The connection carries the `x-cron-secret` header (API key auth, key name `x-cron-secret`, value `$CRON_SECRET`):
+1. **Migration.** Apply `packages/db/drizzle/*.sql` in order, including `0001_social_posts.sql` and `0002_social_pull.sql` (the migrate task or `npm run db:migrate` does this).
+2. **Lambda env.** `--environment` replaces the whole variable map, so merge instead of overwriting. `SLACK_BOT_TOKEN` comes from the existing `arbor-${E}/slack-bot-token` secret:
 
 ```bash
-CONN_ARN=$(aws events create-connection --name "arbor-social-nudge-${E}" \
-  --authorization-type API_KEY \
-  --auth-parameters "ApiKeyAuthParameters={ApiKeyName=x-cron-secret,ApiKeyValue=${CRON_SECRET}}" \
-  --query ConnectionArn --output text)
-
-DEST_ARN=$(aws events create-api-destination --name "arbor-social-nudge-${E}" \
-  --connection-arn "$CONN_ARN" --http-method POST \
-  --invocation-endpoint "${API_URL}/cron/social-nudge" \
-  --query ApiDestinationArn --output text)
-
-aws events put-rule --name "arbor-social-nudge-${E}" \
-  --schedule-expression "rate(15 minutes)"
-aws events put-targets --rule "arbor-social-nudge-${E}" \
-  --targets "Id=nudge,Arn=${DEST_ARN},RoleArn=<role-with-events:InvokeApiDestination>"
+TOKEN=$(aws secretsmanager get-secret-value \
+  --secret-id "arbor-${E}/slack-bot-token" --query SecretString --output text)
+ENV=$(aws lambda get-function-configuration --function-name "arbor-webhook-${E}" \
+  --query Environment --output json \
+  | jq --arg t "$TOKEN" '.Variables.SLACK_BOT_TOKEN=$t')
+aws lambda update-function-configuration --function-name "arbor-webhook-${E}" \
+  --environment "$ENV"
 ```
 
-A wrong or missing secret returns 401 and the nudge does not run.
+   Add `SOCIAL_APPROVALS_CHANNEL` and `SOCIAL_APPROVER_IDS` to the agent task definition; both are required (proposals are refused without them).
+3. **API Gateway route.** Add `POST /slack/interactions` on the existing Lambda integration (there is no `/cron` route):
+
+```bash
+API_ID=$(aws apigatewayv2 get-apis --query "Items[?Name=='arbor-${E}'].ApiId" --output text)
+INTEGRATION_ID=$(aws apigatewayv2 get-integrations --api-id "$API_ID" \
+  --query 'Items[0].IntegrationId' --output text)
+aws apigatewayv2 create-route --api-id "$API_ID" \
+  --route-key "POST /slack/interactions" --target "integrations/${INTEGRATION_ID}"
+```
+
+4. **EventBridge schedule.** A rule invokes the Lambda directly every 15 minutes; the Lambda checks Postgres and wakes the agent only if a nudge is due. No secret or API destination is involved:
+
+```bash
+RULE_ARN=$(aws events put-rule --name "arbor-social-nudge-${E}" \
+  --schedule-expression 'rate(15 minutes)' --query RuleArn --output text)
+aws lambda add-permission --function-name "arbor-webhook-${E}" \
+  --statement-id social-nudge --action lambda:InvokeFunction \
+  --principal events.amazonaws.com --source-arn "$RULE_ARN"
+LAMBDA_ARN=$(aws lambda get-function --function-name "arbor-webhook-${E}" \
+  --query Configuration.FunctionArn --output text)
+aws events put-targets --rule "arbor-social-nudge-${E}" \
+  --targets "Id=nudge,Arn=${LAMBDA_ARN}"
+```
 
 5. **Slack app.** Add the `/propose-post` command and enable Interactivity (Request URL `<API_URL>/slack/interactions`); scopes `chat:write` and `commands`.
 
