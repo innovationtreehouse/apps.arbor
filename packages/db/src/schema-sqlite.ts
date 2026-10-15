@@ -24,3 +24,23 @@ export const auditLog = sqliteTable("audit_log", {
   duration_ms: integer("duration_ms").notNull(),
   created_at: text("created_at").notNull().$default(() => new Date().toISOString()),
 });
+
+export const socialPosts = sqliteTable("social_posts", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  platform: text("platform").notNull(),
+  content: text("content").notNull(),
+  media_url: text("media_url"),
+  scheduled_at: text("scheduled_at").notNull(),
+  proposer_id: text("proposer_id").notNull(),
+  status: text("status").notNull().default("pending_review"),
+  review: text("review"),
+  channel: text("channel"),
+  thread_ts: text("thread_ts"),
+  approved_by: text("approved_by"),
+  objected_by: text("objected_by"),
+  posted_by: text("posted_by"),
+  posted_at: text("posted_at"),
+  nudged_at: text("nudged_at"),
+  created_at: text("created_at").notNull().$default(() => new Date().toISOString()),
+  updated_at: text("updated_at").notNull().$default(() => new Date().toISOString()),
+});

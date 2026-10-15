@@ -69,6 +69,28 @@ export async function postEphemeral(
   });
 }
 
+// Block Kit messages for the social post approval flow.
+export type Block = { type: string; [k: string]: unknown };
+
+export async function postMessageBlocks(
+  channel: string,
+  blocks: Block[],
+  text: string,
+  thread_ts?: string
+): Promise<string> {
+  const res = await client.chat.postMessage({ channel, blocks, text, thread_ts });
+  return res.ts!;
+}
+
+export async function updateMessage(
+  channel: string,
+  ts: string,
+  blocks: Block[],
+  text: string
+): Promise<void> {
+  await client.chat.update({ channel, ts, blocks, text });
+}
+
 // ---------------------------------------------------------------------------
 // Image fetching
 // ---------------------------------------------------------------------------

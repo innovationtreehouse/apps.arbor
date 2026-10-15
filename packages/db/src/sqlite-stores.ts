@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { eq, and, desc, count } from "drizzle-orm";
+import { eq, and, desc, count, between, isNull, lte, notInArray } from "drizzle-orm";
 import * as schema from "./schema-sqlite.js";
 import type {
   UrlStore,
@@ -11,6 +11,14 @@ import type {
   AuditRecord,
   NewAuditRecord,
 } from "./store.js";
+import type {
+  SocialPlatform,
+  SocialPost,
+  SocialPostStatus,
+  NewSocialPost,
+  SocialPostPatch,
+  SocialPostStore,
+} from "./social-store.js";
 
 type SqliteDb = ReturnType<typeof drizzle<typeof schema>>;
 
@@ -38,6 +46,25 @@ function openDb(filePath: string): SqliteDb {
       "model" text,
       "duration_ms" integer NOT NULL,
       "created_at" text NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    );
+    CREATE TABLE IF NOT EXISTS "social_posts" (
+      "id" integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+      "platform" text NOT NULL,
+      "content" text NOT NULL,
+      "media_url" text,
+      "scheduled_at" text NOT NULL,
+      "proposer_id" text NOT NULL,
+      "status" text NOT NULL DEFAULT 'pending_review',
+      "review" text,
+      "channel" text,
+      "thread_ts" text,
+      "approved_by" text,
+      "objected_by" text,
+      "posted_by" text,
+      "posted_at" text,
+      "nudged_at" text,
+      "created_at" text NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      "updated_at" text NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     );
   `);
   return drizzle(sqlite, { schema });
@@ -157,16 +184,103 @@ export class SqliteAuditStore implements AuditStore {
   }
 }
 
+// Timestamps are normalized to toISOString() so text comparison == time order.
+const iso = (s: string) => new Date(s).toISOString();
+const isoOrNull = (s: string | null | undefined) => (s == null ? s : iso(s));
+const TERMINAL: SocialPostStatus[] = ["posted", "withdrawn"];
+
+export class SqliteSocialPostStore implements SocialPostStore {
+  constructor(private db: SqliteDb) {}
+
+  async create(post: NewSocialPost): Promise<SocialPost> {
+    const row = this.db
+      .insert(schema.socialPosts)
+      .values({ ...post, scheduled_at: iso(post.scheduled_at) })
+      .returning()
+      .get();
+    return toSocialPost(row);
+  }
+
+  async get(id: number): Promise<SocialPost | undefined> {
+    const row = this.db.select().from(schema.socialPosts).where(eq(schema.socialPosts.id, id)).get();
+    return row && toSocialPost(row);
+  }
+
+  async update(id: number, patch: SocialPostPatch): Promise<SocialPost> {
+    const row = this.db
+      .update(schema.socialPosts)
+      .set({
+        ...patch,
+        scheduled_at: patch.scheduled_at ? iso(patch.scheduled_at) : undefined,
+        posted_at: isoOrNull(patch.posted_at),
+        nudged_at: isoOrNull(patch.nudged_at),
+        updated_at: new Date().toISOString(),
+      })
+      .where(eq(schema.socialPosts.id, id))
+      .returning()
+      .get();
+    if (!row) throw new Error(`social post ${id} not found`);
+    return toSocialPost(row);
+  }
+
+  async listOpen(): Promise<SocialPost[]> {
+    return this.db
+      .select()
+      .from(schema.socialPosts)
+      .where(notInArray(schema.socialPosts.status, TERMINAL))
+      .orderBy(desc(schema.socialPosts.created_at), desc(schema.socialPosts.id))
+      .all()
+      .map(toSocialPost);
+  }
+
+  async listNear(platform: SocialPlatform, scheduledAt: string, windowMs: number): Promise<SocialPost[]> {
+    const t = new Date(scheduledAt).getTime();
+    return this.db
+      .select()
+      .from(schema.socialPosts)
+      .where(
+        and(
+          eq(schema.socialPosts.platform, platform),
+          notInArray(schema.socialPosts.status, TERMINAL),
+          between(
+            schema.socialPosts.scheduled_at,
+            new Date(t - windowMs).toISOString(),
+            new Date(t + windowMs).toISOString()
+          )
+        )
+      )
+      .all()
+      .map(toSocialPost);
+  }
+
+  async listDueForNudge(now: string): Promise<SocialPost[]> {
+    return this.db
+      .select()
+      .from(schema.socialPosts)
+      .where(
+        and(
+          eq(schema.socialPosts.status, "approved"),
+          lte(schema.socialPosts.scheduled_at, iso(now)),
+          isNull(schema.socialPosts.nudged_at)
+        )
+      )
+      .all()
+      .map(toSocialPost);
+  }
+}
+
 export function createSqliteStores(filePath: string): {
   urlStore: SqliteUrlStore;
   configStore: SqliteConfigStore;
   auditStore: SqliteAuditStore;
+  socialPostStore: SqliteSocialPostStore;
 } {
   const db = openDb(filePath);
   return {
     urlStore: new SqliteUrlStore(db),
     configStore: new SqliteConfigStore(db),
     auditStore: new SqliteAuditStore(db),
+    socialPostStore: new SqliteSocialPostStore(db),
   };
 }
 
@@ -192,4 +306,8 @@ function toAuditRecord(row: typeof schema.auditLog.$inferSelect): AuditRecord {
     duration_ms: row.duration_ms,
     created_at: row.created_at,
   };
+}
+
+function toSocialPost(row: typeof schema.socialPosts.$inferSelect): SocialPost {
+  return { ...row, platform: row.platform as SocialPlatform, status: row.status as SocialPostStatus };
 }

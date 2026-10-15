@@ -916,6 +916,38 @@ These steps are done in the [Slack API console](https://api.slack.com/apps) and 
 
 ---
 
+## Social Post Approval
+
+Per environment, after Part 2. See [Social Post Approval](social-posts.md).
+
+1. **Migration.** Apply `packages/db/drizzle/0001_social_posts.sql` (the normal migrate task or `npm run db:migrate` includes it).
+2. **Lambda env.** Add `SLACK_BOT_TOKEN` and `CRON_SECRET` to the Lambda configuration; add `SOCIAL_APPROVALS_CHANNEL` and `SOCIAL_APPROVER_IDS` to the agent task definition.
+3. **API Gateway routes.** Add `POST /slack/interactions` and `POST /cron/social-nudge` with the same Lambda integration as the other routes.
+4. **EventBridge schedule.** Scheduler cannot call an HTTP endpoint directly; use an EventBridge connection plus API destination, and a schedule rule that targets it every 15 minutes. The connection carries the `x-cron-secret` header (API key auth, key name `x-cron-secret`, value `$CRON_SECRET`):
+
+```bash
+CONN_ARN=$(aws events create-connection --name "arbor-social-nudge-${E}" \
+  --authorization-type API_KEY \
+  --auth-parameters "ApiKeyAuthParameters={ApiKeyName=x-cron-secret,ApiKeyValue=${CRON_SECRET}}" \
+  --query ConnectionArn --output text)
+
+DEST_ARN=$(aws events create-api-destination --name "arbor-social-nudge-${E}" \
+  --connection-arn "$CONN_ARN" --http-method POST \
+  --invocation-endpoint "${API_URL}/cron/social-nudge" \
+  --query ApiDestinationArn --output text)
+
+aws events put-rule --name "arbor-social-nudge-${E}" \
+  --schedule-expression "rate(15 minutes)"
+aws events put-targets --rule "arbor-social-nudge-${E}" \
+  --targets "Id=nudge,Arn=${DEST_ARN},RoleArn=<role-with-events:InvokeApiDestination>"
+```
+
+A wrong or missing secret returns 401 and the nudge does not run.
+
+5. **Slack app.** Add the `/propose-post` command and enable Interactivity (Request URL `<API_URL>/slack/interactions`); scopes `chat:write` and `commands`.
+
+---
+
 ## Smoke Test
 
 ```bash

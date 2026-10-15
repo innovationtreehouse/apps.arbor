@@ -8,6 +8,7 @@ import {
 import type { APIGatewayProxyHandlerV2 } from "aws-lambda";
 import { ChannelRateLimiter } from "./rate-limiter.js";
 import { PostgresConfigStore } from "@arbor/db";
+import { handleInteraction, handleProposePost } from "./social.js";
 
 const sqsClient = new SQSClient({});
 const ecsClient = new ECSClient({});
@@ -57,6 +58,19 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const body = event.isBase64Encoded
     ? Buffer.from(rawBody, "base64").toString("utf8")
     : rawBody;
+  const path = event.rawPath;
+
+  // EventBridge cron: shared-secret header instead of a Slack signature.
+  if (path === "/cron/social-nudge") {
+    const given = Buffer.from(event.headers["x-cron-secret"] ?? "");
+    const expected = Buffer.from(process.env.CRON_SECRET ?? "");
+    if (!expected.length || given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) {
+      return { statusCode: 401, body: "Unauthorized" };
+    }
+    await enqueue({ type: "social_post_nudge" });
+    return { statusCode: 200, body: "" };
+  }
+
   const timestamp = event.headers["x-slack-request-timestamp"] ?? "";
   const signature = event.headers["x-slack-signature"] ?? "";
 
@@ -64,13 +78,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return { statusCode: 401, body: "Invalid signature" };
   }
 
-  const path = event.rawPath;
-
   if (path === "/slack/events") {
     return handleEvent(body);
   }
   if (path === "/slack/commands") {
     return handleCommand(body);
+  }
+  if (path === "/slack/interactions") {
+    return handleInteraction(body, enqueue);
   }
 
   return { statusCode: 404, body: "Not found" };
@@ -183,6 +198,13 @@ async function handleEvent(rawBody: string) {
   return { statusCode: 200, body: "" };
 }
 
+async function enqueue(msg: Record<string, unknown>) {
+  await ensureAgentRunning();
+  await sqsClient.send(
+    new SendMessageCommand({ QueueUrl: process.env.SQS_QUEUE_URL!, MessageBody: JSON.stringify(msg) })
+  );
+}
+
 async function ensureAgentRunning() {
   const listResult = await ecsClient.send(
     new ListTasksCommand({
@@ -216,6 +238,7 @@ async function ensureAgentRunning() {
 
 async function handleCommand(rawBody: string) {
   const params = new URLSearchParams(rawBody);
+  if (params.get("command") === "/propose-post") return handleProposePost(params);
   const userId = params.get("user_id") ?? "";
   const text = (params.get("text") ?? "").trim();
   const responseUrl = params.get("response_url") ?? "";
