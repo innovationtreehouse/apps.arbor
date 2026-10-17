@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the agent SDK before importing the module under test
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
@@ -12,8 +12,18 @@ const { runAgent } = await import("../agent.js");
 process.env.AWS_REGION = "us-east-1";
 process.env.SLACK_BOT_TOKEN = "xoxb-test";
 
+const savedKey = process.env.OPENROUTER_API_KEY;
+const savedBase = process.env.OPENROUTER_BASE_URL;
 beforeEach(() => {
   vi.mocked(query).mockReset();
+  process.env.OPENROUTER_API_KEY = "sk-or-test";
+  delete process.env.OPENROUTER_BASE_URL;
+});
+afterAll(() => {
+  if (savedKey === undefined) delete process.env.OPENROUTER_API_KEY;
+  else process.env.OPENROUTER_API_KEY = savedKey;
+  if (savedBase === undefined) delete process.env.OPENROUTER_BASE_URL;
+  else process.env.OPENROUTER_BASE_URL = savedBase;
 });
 
 describe("runAgent", () => {
@@ -68,7 +78,7 @@ describe("runAgent", () => {
     delete process.env.MODEL;
   });
 
-  it("falls back to claude-opus-4-6 when MODEL is not set", async () => {
+  it("falls back to the OpenRouter default model when MODEL is not set", async () => {
     delete process.env.MODEL;
     vi.mocked(query).mockReturnValue(
       (async function* () {
@@ -79,7 +89,25 @@ describe("runAgent", () => {
     await runAgent("prompt", "system");
 
     const callArgs = vi.mocked(query).mock.calls[0][0];
-    expect(callArgs.options?.model).toBe("claude-opus-4-6");
+    expect(callArgs.options?.model).toBe("anthropic/claude-opus-4.6");
+  });
+
+  it("passes OpenRouter provider env to query", async () => {
+    vi.mocked(query).mockReturnValue((async function* () { yield { result: "ok" }; })());
+    await runAgent("prompt", "system");
+    const env = vi.mocked(query).mock.calls[0][0].options?.env;
+    expect(env).toMatchObject({
+      ANTHROPIC_BASE_URL: "https://openrouter.ai/api",
+      ANTHROPIC_AUTH_TOKEN: "sk-or-test",
+      ANTHROPIC_API_KEY: "",
+    });
+  });
+
+  it("OPENROUTER_BASE_URL overrides the base URL", async () => {
+    process.env.OPENROUTER_BASE_URL = "http://localhost:9999/api";
+    vi.mocked(query).mockReturnValue((async function* () { yield { result: "ok" }; })());
+    await runAgent("prompt", "system");
+    expect(vi.mocked(query).mock.calls[0][0].options?.env?.ANTHROPIC_BASE_URL).toBe("http://localhost:9999/api");
   });
 
   it("includes gdrive, github, and urlFetcher MCP servers", async () => {

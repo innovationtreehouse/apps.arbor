@@ -26,7 +26,7 @@ packages/
 - AWS account with permissions for Lambda, ECS, SQS
 - PostgreSQL 14+ database accessible from Lambda and ECS
 - Slack workspace with a bot app configured (Events API + slash commands)
-- Anthropic API key
+- OpenRouter API key
 - Google service account with Drive API access
 - GitHub personal access token
 
@@ -44,7 +44,7 @@ See [Runtime Configuration](docs/configuration.md) for the full reference. The v
 
 **Lambda** — `SLACK_SIGNING_SECRET`, `DATABASE_URL`, `SQS_QUEUE_URL`, `ECS_CLUSTER`, `ECS_TASK_FAMILY`, `ECS_TASK_DEFINITION`, `SUBNET_IDS`, `SECURITY_GROUP_IDS`, `ADMIN_USER_IDS`
 
-**Agent** — `ANTHROPIC_API_KEY`, `SLACK_BOT_TOKEN`, `DATABASE_URL`, `SQS_QUEUE_URL`, `AWS_REGION`, `GOOGLE_CREDENTIALS`, `GITHUB_TOKEN`
+**Agent** — `OPENROUTER_API_KEY`, `SLACK_BOT_TOKEN`, `DATABASE_URL`, `SQS_QUEUE_URL`, `AWS_REGION`, `GOOGLE_CREDENTIALS`, `GITHUB_TOKEN`
 
 ### 3. Build
 

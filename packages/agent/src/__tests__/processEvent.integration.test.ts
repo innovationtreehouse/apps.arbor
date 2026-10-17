@@ -17,7 +17,7 @@ const event = {
   text: "Reply with exactly the word hello and nothing else.",
 };
 
-describe.skipIf(!process.env.ANTHROPIC_API_KEY)(
+describe.skipIf(!process.env.OPENROUTER_API_KEY)(
   "integration: processEvent",
   () => {
     beforeEach(() => {

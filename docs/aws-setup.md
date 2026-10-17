@@ -317,7 +317,7 @@ ARTIFACT_BUCKET="arbor-lambda-artifacts"   # must match Part 1
 DB_PASSWORD="change-me-use-something-strong"
 SLACK_SIGNING_SECRET="your-slack-signing-secret"
 SLACK_BOT_TOKEN="xoxb-your-bot-token"
-ANTHROPIC_API_KEY="sk-ant-your-key"
+OPENROUTER_API_KEY="sk-or-your-key"
 GOOGLE_CREDENTIALS_FILE="/path/to/service-account.json"
 GITHUB_TOKEN="ghp_your-token"
 ADMIN_USER_IDS="U12345678"   # comma-separated Slack user IDs for /squirrel-admin
@@ -546,8 +546,8 @@ aws secretsmanager create-secret \
   --secret-string "$SLACK_BOT_TOKEN"
 
 aws secretsmanager create-secret \
-  --name "arbor-${E}/anthropic-api-key" \
-  --secret-string "$ANTHROPIC_API_KEY"
+  --name "arbor-${E}/openrouter-api-key" \
+  --secret-string "$OPENROUTER_API_KEY"
 
 aws secretsmanager create-secret \
   --name "arbor-${E}/google-credentials" \
@@ -703,7 +703,7 @@ cat > /tmp/arbor-task-def-${E}.json <<TASKDEF
     "secrets": [
       {"name":"DATABASE_URL",       "valueFrom":"arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:arbor-${E}/database-url"},
       {"name":"SLACK_BOT_TOKEN",    "valueFrom":"arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:arbor-${E}/slack-bot-token"},
-      {"name":"ANTHROPIC_API_KEY",  "valueFrom":"arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:arbor-${E}/anthropic-api-key"},
+      {"name":"OPENROUTER_API_KEY", "valueFrom":"arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:arbor-${E}/openrouter-api-key"},
       {"name":"GOOGLE_CREDENTIALS", "valueFrom":"arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:arbor-${E}/google-credentials"},
       {"name":"GITHUB_TOKEN",       "valueFrom":"arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:arbor-${E}/github-token"}
     ],

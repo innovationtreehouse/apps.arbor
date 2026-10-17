@@ -2,6 +2,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import * as path from "path";
 import { randomUUID } from "crypto";
 import type { ImageContent } from "./slack.js";
+import { DEFAULT_MODEL, providerEnv } from "./provider.js";
 
 export async function runAgent(
   prompt: string,
@@ -109,8 +110,9 @@ async function runAgentOnce(
   for await (const message of query({
     prompt: sdkPrompt,
     options: {
-      model: model ?? process.env.MODEL ?? "claude-opus-4-6",
+      model: model ?? process.env.MODEL ?? DEFAULT_MODEL,
       systemPrompt,
+      env: { ...process.env, ...providerEnv() },
       allowedTools: [
         // URL fetcher — read allowed URLs
         "mcp__urlFetcher__url_fetch",
