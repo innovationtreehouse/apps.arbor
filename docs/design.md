@@ -80,7 +80,7 @@ Squirrel is the default name of the AI agent that operates as a named member of 
 │                          │                                       │
 │  ┌───────────────────────▼──────────────────────────────────┐   │
 │  │         Claude Agent SDK  —  query()                     │   │
-│  │  Model: claude-sonnet-4-6                                │   │
+│  │  Model: anthropic/claude-opus-4.6 (via OpenRouter)       │   │
 │  └──────┬──────────────┬─────────────────┬──────────────────┘   │
 │         │ stdio        │ stdio           │ stdio                │
 │         ▼              ▼                 ▼                      │
@@ -302,7 +302,7 @@ async function buildPrompt(channel: string, threadTs: string, newText: string): 
 | `SLACK_SIGNING_SECRET` | Lambda | Verify inbound webhook signatures |
 | `SLACK_BOT_TOKEN` | Agent container | Post messages, fetch thread history |
 | `ADMIN_USER_IDS` | Lambda | Comma-separated Slack user IDs authorized for `/squirrel-admin` |
-| `ANTHROPIC_API_KEY` | Claude Agent SDK | Anthropic API |
+| `OPENROUTER_API_KEY` | Claude Agent SDK | OpenRouter's Anthropic-compatible endpoint; models use OpenRouter IDs (e.g. `anthropic/claude-opus-4.6`) |
 | `GOOGLE_CREDENTIALS` | `server-gdrive` | Google service account key (JSON) |
 | `GITHUB_TOKEN` | `server-github` | GitHub fine-grained PAT |
 | `DATABASE_URL` | Lambda, Agent, `url-fetcher` MCP | PostgreSQL connection string |
@@ -333,7 +333,7 @@ Tracing "@Squirrel what does the Q4 plan say about the API redesign?" in a threa
 
 4. Agent calls query() with prompt and MCP server configs
 
-5. SDK → Anthropic API (first call):
+5. SDK → OpenRouter (first call):
    - Model receives prompt + tool catalog
    - Plans: search Drive for "Q4 plan", check configured docs URLs for API context
 
@@ -346,7 +346,7 @@ Tracing "@Squirrel what does the Q4 plan say about the API redesign?" in a threa
 8. SDK → url-fetcher: url_fetch("https://internal-wiki.example.com/api-redesign")
    → URL is on allowlist; fetcher returns page text
 
-9. SDK → Anthropic API (final call):
+9. SDK → OpenRouter (final call):
    - Model synthesizes Drive content + wiki page content
    - Produces answer
 

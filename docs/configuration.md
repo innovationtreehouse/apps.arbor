@@ -30,7 +30,8 @@ The agent container also runs the `mcp-url-fetcher` MCP server in-process, which
 
 | Variable | Sensitive | Default | Description |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | Yes | — | Anthropic API key passed to the Claude Agent SDK |
+| `OPENROUTER_API_KEY` | Yes | — | OpenRouter API key (`sk-or-…`); the Claude Agent SDK is pointed at OpenRouter's Anthropic-compatible endpoint |
+| `OPENROUTER_BASE_URL` | No | `https://openrouter.ai/api` | OpenRouter base URL |
 | `SLACK_BOT_TOKEN` | Yes | — | Slack bot OAuth token (`xoxb-…`) used to post replies and fetch thread history |
 | `DATABASE_URL` | Yes | — | Same PostgreSQL connection string as Lambda |
 | `GOOGLE_CREDENTIALS` | Yes | — | Google service account JSON as a single-line string; grants Drive API read/write access |
@@ -38,7 +39,7 @@ The agent container also runs the `mcp-url-fetcher` MCP server in-process, which
 | `SQS_QUEUE_URL` | No | — | Same SQS queue URL as Lambda |
 | `AWS_REGION` | No | — | AWS region (e.g. `us-east-1`) |
 | `AGENT_NAME` | No | `Squirrel` | Bot display name used in the system prompt and thread message labels |
-| `MODEL` | No | `claude-sonnet-4-6` | Claude model ID used as fallback when no model is set in `agent_config` |
+| `MODEL` | No | `anthropic/claude-opus-4.6` | OpenRouter model ID used as fallback when no model is set in `agent_config` |
 | `IDLE_TIMEOUT` | No | `15` | Minutes of SQS inactivity before the container calls `process.exit(0)` |
 | `THREAD_HISTORY_LIMIT` | No | `50` | Maximum number of prior Slack messages to include as thread context |
 | `URL_POLL_INTERVAL_S` | No | `60` | How often the URL Fetcher MCP server refreshes the allowlist from the database, in seconds |
@@ -50,16 +51,16 @@ The agent container also runs the `mcp-url-fetcher` MCP server in-process, which
 
 ## Runtime model override
 
-The active Claude model can be changed at runtime without redeploying, using the `/squirrel-admin model` slash command:
+The active model (any OpenRouter model ID) can be changed at runtime without redeploying, using the `/squirrel-admin model` slash command:
 
 ```
 /squirrel-admin model                          # show current model
-/squirrel-admin model claude-opus-4-6          # switch to Opus
-/squirrel-admin model claude-sonnet-4-6        # switch to Sonnet (default)
-/squirrel-admin model claude-haiku-4-5-20251001  # switch to Haiku
+/squirrel-admin model anthropic/claude-opus-4.6          # switch to Opus
+/squirrel-admin model anthropic/claude-sonnet-4.6        # switch to Sonnet
+/squirrel-admin model anthropic/claude-haiku-4.5  # switch to Haiku
 ```
 
-The model is stored in the `agent_config` PostgreSQL table under the key `model`. It takes effect on the next message the agent processes — no container restart required. The `MODEL` environment variable serves as the fallback when no value is stored in the database.
+The model is stored in the `agent_config` PostgreSQL table under the key `model`. It takes effect on the next message the agent processes — no container restart required. The `MODEL` environment variable serves as the fallback when no value is stored in the database. IDs must be `provider/model`; the command rejects bare IDs and warns when a stored pre-OpenRouter value (e.g. `claude-opus-4-6`) is active. Non-Anthropic models on OpenRouter may handle the MCP tool schema less reliably.
 
 ---
 

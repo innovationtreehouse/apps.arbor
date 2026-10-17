@@ -1,5 +1,6 @@
 import type { UrlStore, ConfigStore, AuditStore } from "@arbor/db";
 import { buildSystemPrompt, defaultSystemPrompt, DEFAULT_USER_PROMPT_TEMPLATE } from "./prompt.js";
+import { DEFAULT_MODEL, openRouterBaseUrl } from "./provider.js";
 
 interface AdminCommand {
   type: "admin_command";
@@ -133,8 +134,13 @@ async function handleTest(args: string[]): Promise<string> {
 async function handleModel(args: string[], configStore: ConfigStore): Promise<string> {
   if (args.length === 0) {
     const current = await configStore.get("model");
-    const display = current ?? "claude-opus-4-6 (default)";
-    return `*Active model:* \`${display}\``;
+    const display = current ?? `${process.env.MODEL ?? DEFAULT_MODEL} (default)`;
+    // Pre-OpenRouter values (e.g. "claude-opus-4-6") lack the provider prefix and will fail.
+    const warn = display.includes("/") ? "" : "\n⚠️ Not an OpenRouter model ID (expected `provider/model`). Run `/squirrel-admin model anthropic/claude-opus-4.6`.";
+    return `*Active model:* \`${display}\`${warn}`;
+  }
+  if (!args[0].includes("/")) {
+    return `❌ \`${args[0]}\` is not an OpenRouter model ID. Use \`provider/model\`, e.g. \`${DEFAULT_MODEL}\`.`;
   }
   await configStore.set("model", args[0]);
   return `✅ Model set to \`${args[0]}\`. Takes effect on the next message.`;
@@ -226,14 +232,15 @@ async function handleCheck(urlStore: UrlStore): Promise<string> {
     }
   }
 
-  // Anthropic API key
-  const anthropicKey = process.env.ANTHROPIC_API_KEY;
-  if (!anthropicKey) {
-    results.push("❌ *Anthropic API*: `ANTHROPIC_API_KEY` not set");
-  } else if (!anthropicKey.startsWith("sk-ant-")) {
-    results.push("⚠️ *Anthropic API*: key set but format looks unexpected");
+  // OpenRouter API key
+  const openRouterKey = process.env.OPENROUTER_API_KEY;
+  const baseUrl = openRouterBaseUrl();
+  if (!openRouterKey) {
+    results.push("❌ *OpenRouter*: `OPENROUTER_API_KEY` not set");
+  } else if (!openRouterKey.startsWith("sk-or-")) {
+    results.push(`⚠️ *OpenRouter*: key set but format looks unexpected (\`${baseUrl}\`)`);
   } else {
-    results.push(`✅ *Anthropic API*: key configured (\`${anthropicKey.slice(0, 12)}…\`)`);
+    results.push(`✅ *OpenRouter*: key configured (\`${openRouterKey.slice(0, 12)}…\`) via \`${baseUrl}\``);
   }
 
   // URL fetcher / database

@@ -200,9 +200,22 @@ describe("test", () => {
 
 describe("model", () => {
   it("shows current model", async () => {
+    vi.mocked(mockConfigStore.get).mockResolvedValueOnce("anthropic/claude-opus-4.6");
+    const text = await runCommand("model", []);
+    expect(text).toContain("anthropic/claude-opus-4.6");
+    expect(text).not.toContain("⚠️");
+  });
+
+  it("warns when the stored model is a pre-OpenRouter ID", async () => {
     vi.mocked(mockConfigStore.get).mockResolvedValueOnce("claude-opus-4-6");
     const text = await runCommand("model", []);
-    expect(text).toContain("claude-opus-4-6");
+    expect(text).toContain("Not an OpenRouter model ID");
+  });
+
+  it("rejects a model ID without a provider prefix", async () => {
+    const text = await runCommand("model", ["claude-haiku-4-5-20251001"]);
+    expect(text).toContain("❌");
+    expect(mockConfigStore.set).not.toHaveBeenCalled();
   });
 
   it("shows default when no model set", async () => {
@@ -212,9 +225,9 @@ describe("model", () => {
   });
 
   it("sets model when argument provided", async () => {
-    const text = await runCommand("model", ["claude-haiku-4-5-20251001"]);
-    expect(text).toContain("claude-haiku-4-5-20251001");
-    expect(mockConfigStore.set).toHaveBeenCalledWith("model", "claude-haiku-4-5-20251001");
+    const text = await runCommand("model", ["anthropic/claude-haiku-4.5"]);
+    expect(text).toContain("anthropic/claude-haiku-4.5");
+    expect(mockConfigStore.set).toHaveBeenCalledWith("model", "anthropic/claude-haiku-4.5");
   });
 });
 
@@ -343,7 +356,7 @@ describe("check", () => {
   beforeEach(() => {
     delete process.env.GOOGLE_CREDENTIALS;
     delete process.env.GITHUB_TOKEN;
-    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
   });
 
   function makeCheckFetch(overrides: Record<string, () => Promise<unknown>> = {}) {
@@ -425,7 +438,7 @@ describe("check", () => {
   it("reports GitHub auth success", async () => {
     process.env.GOOGLE_CREDENTIALS = validCreds;
     process.env.GITHUB_TOKEN = "ghp_test";
-    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
     vi.mocked(mockUrlStore.count).mockResolvedValueOnce(3);
     mockFetch.mockImplementation(makeCheckFetch({
       "https://oauth2.googleapis.com/token": async () => ({ ok: true, json: async () => ({ access_token: "tok" }) }),
@@ -446,12 +459,20 @@ describe("check", () => {
     expect(text).toContain("connection refused");
   });
 
-  it("reports unknown ANTHROPIC_API_KEY format", async () => {
-    process.env.ANTHROPIC_API_KEY = "not-a-real-key";
+  it("reports unknown OPENROUTER_API_KEY format", async () => {
+    process.env.OPENROUTER_API_KEY = "not-a-real-key";
     vi.mocked(mockUrlStore.count).mockResolvedValueOnce(0);
     mockFetch.mockImplementation(makeCheckFetch());
     const text = await runCommand("check");
     expect(text).toContain("format looks unexpected");
+  });
+
+  it("reports missing OPENROUTER_API_KEY", async () => {
+    vi.mocked(mockUrlStore.count).mockResolvedValueOnce(0);
+    mockFetch.mockImplementation(makeCheckFetch());
+    const text = await runCommand("check");
+    expect(text).toContain("OPENROUTER_API_KEY");
+    expect(text).toContain("❌");
   });
 });
 

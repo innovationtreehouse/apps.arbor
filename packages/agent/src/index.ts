@@ -11,6 +11,7 @@ import { runAgent } from "./agent.js";
 import { buildPrompt, buildSystemPrompt } from "./prompt.js";
 import { BatchBuffer, type BatchEvent } from "./batch-buffer.js";
 import { processAdminCommand } from "./admin.js";
+import { providerEnv } from "./provider.js";
 
 export const NO_REPLY_SENTINEL = "__NO_REPLY__";
 
@@ -98,6 +99,7 @@ export async function processEvent(event: SlackEvent): Promise<void> {
 
 /* v8 ignore start */
 async function main(): Promise<void> {
+  providerEnv(); // throws if OPENROUTER_API_KEY is missing
   console.log("Arbor agent started, polling SQS...");
   let idleMs = 0;
 

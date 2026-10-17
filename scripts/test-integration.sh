@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
-  echo "Error: ANTHROPIC_API_KEY is not set. Export it before running this script."
+if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+  echo "Error: OPENROUTER_API_KEY is not set. Export it before running this script."
   exit 1
 fi
 
