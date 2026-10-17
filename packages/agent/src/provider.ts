@@ -17,3 +17,13 @@ export function providerEnv(): Record<string, string> {
     ANTHROPIC_API_KEY: "",
   };
 }
+
+// OpenRouter IDs are "provider/model". A bare ID stored before the cutover
+// (e.g. "claude-opus-4-6") would fail every request, so fall back instead.
+export function resolveModel(stored?: string): string {
+  for (const id of [stored, process.env.MODEL]) {
+    if (id?.includes("/")) return id;
+    if (id) console.warn(`[agent] ignoring model "${id}": not an OpenRouter provider/model ID`);
+  }
+  return DEFAULT_MODEL;
+}

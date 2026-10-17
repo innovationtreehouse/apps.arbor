@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_OPENROUTER_BASE_URL, openRouterBaseUrl, providerEnv } from "../provider.js";
+import { DEFAULT_MODEL, DEFAULT_OPENROUTER_BASE_URL, openRouterBaseUrl, providerEnv, resolveModel } from "../provider.js";
 
 const saved = { k: process.env.OPENROUTER_API_KEY, b: process.env.OPENROUTER_BASE_URL };
 beforeEach(() => {
@@ -39,5 +39,24 @@ describe("provider", () => {
     const env = providerEnv();
     expect("ANTHROPIC_API_KEY" in env).toBe(true);
     expect(env.ANTHROPIC_API_KEY).toBe("");
+  });
+});
+
+describe("resolveModel", () => {
+  afterEach(() => { delete process.env.MODEL; });
+
+  it("uses a stored provider/model ID", () => {
+    expect(resolveModel("anthropic/claude-haiku-4.5")).toBe("anthropic/claude-haiku-4.5");
+  });
+
+  it("falls back past a bare pre-OpenRouter ID", () => {
+    process.env.MODEL = "anthropic/claude-sonnet-4.6";
+    expect(resolveModel("claude-opus-4-6")).toBe("anthropic/claude-sonnet-4.6");
+    delete process.env.MODEL;
+    expect(resolveModel("claude-opus-4-6")).toBe(DEFAULT_MODEL);
+  });
+
+  it("defaults when nothing is set", () => {
+    expect(resolveModel(undefined)).toBe(DEFAULT_MODEL);
   });
 });
