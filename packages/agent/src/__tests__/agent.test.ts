@@ -67,14 +67,14 @@ describe("runAgent", () => {
         yield { result: "ok" };
       })()
     );
-    process.env.MODEL = "claude-opus-4-6";
+    process.env.MODEL = "anthropic/claude-opus-4.6";
 
     await runAgent("test prompt", "test system");
 
     const callArgs = vi.mocked(query).mock.calls[0][0];
     expect(callArgs.prompt).toBe("test prompt");
     expect(callArgs.options?.systemPrompt).toBe("test system");
-    expect(callArgs.options?.model).toBe("claude-opus-4-6");
+    expect(callArgs.options?.model).toBe("anthropic/claude-opus-4.6");
     delete process.env.MODEL;
   });
 
@@ -128,17 +128,17 @@ describe("runAgent", () => {
   });
 
   it("passes model argument to query, taking priority over MODEL env var", async () => {
-    process.env.MODEL = "claude-opus-4-6";
+    process.env.MODEL = "anthropic/claude-opus-4.6";
     vi.mocked(query).mockReturnValue(
       (async function* () {
         yield { result: "ok" };
       })()
     );
 
-    await runAgent("prompt", "system", "claude-haiku-4-5-20251001");
+    await runAgent("prompt", "system", "anthropic/claude-haiku-4.5");
 
     const callArgs = vi.mocked(query).mock.calls[0][0];
-    expect(callArgs.options?.model).toBe("claude-haiku-4-5-20251001");
+    expect(callArgs.options?.model).toBe("anthropic/claude-haiku-4.5");
     delete process.env.MODEL;
   });
 
