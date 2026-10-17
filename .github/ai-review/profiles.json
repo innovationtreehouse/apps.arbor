@@ -1,0 +1,53 @@
+[
+ {
+  "name": "security-boundary",
+  "paths": [
+   "packages/lambda/src/**"
+  ],
+  "instructions": "The Lambda is the public entry point. Slack request signatures must be verified before any work, with a timestamp window against replay; the rate limiter must hold per user and per channel; nothing from the request may reach a shell, a query or a log unescaped."
+ },
+ {
+  "name": "model-and-secrets",
+  "paths": [
+   "packages/agent/src/provider.ts",
+   "packages/agent/src/agent.ts",
+   "packages/agent/src/index.ts",
+   "packages/agent/Dockerfile",
+   "packages/agent/docker-entrypoint.sh"
+  ],
+  "instructions": "API keys and tokens come only from the environment or Secrets Manager and never reach a log, a Slack message or a tool result. The model ID and endpoint must stay OpenRouter's (provider/model). Any env passed to the SDK or to MCP subprocesses must not widen what secrets those processes see."
+ },
+ {
+  "name": "agent-tools",
+  "paths": [
+   "packages/agent/src/gdrive-mcp-proxy.ts",
+   "packages/mcp-url-fetcher/**",
+   "packages/agent/src/user-docs.ts"
+  ],
+  "instructions": "The agent acts for Slack users. Tool allowlists must stay narrow; the URL fetcher must refuse private, link-local and metadata addresses and follow redirects only within the allowlist; Drive and GitHub writes must stay within the documented scopes. A prompt-injected document must not be able to widen what the agent can do."
+ },
+ {
+  "name": "admin-commands",
+  "paths": [
+   "packages/agent/src/admin.ts",
+   "packages/agent/src/slack.ts"
+  ],
+  "instructions": "Admin commands change behaviour for everyone; check who may run each one and that the check happens before any change is stored. Slack replies must not echo secrets or other users' private data."
+ },
+ {
+  "name": "migrations",
+  "paths": [
+   "packages/db/drizzle/**",
+   "packages/db/src/**"
+  ],
+  "instructions": "Schema changes must be backward compatible with the agent and Lambda versions still running during a deploy: add before you use, never rename or drop in the same release. Generated drizzle files must match the schema source."
+ },
+ {
+  "name": "deploy",
+  "paths": [
+   ".github/workflows/**",
+   "scripts/**"
+  ],
+  "instructions": "Deploy and CI changes: secrets referenced must exist, permissions stay minimal, and a dev deploy must not be able to touch prod."
+ }
+]
