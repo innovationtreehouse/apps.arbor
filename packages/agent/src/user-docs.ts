@@ -24,7 +24,8 @@ Reply in any existing thread. ${AGENT_NAME} reads the full thread context plus r
 
 - **Find documents** — search Google Drive for policies, specs, reports, and other files
 - **Read documents** — open and summarize any Drive file it can find
-- **Search GitHub** — look up issues, pull requests, code, and commit history
+- **Search GitHub** — look up issues, pull requests, code, READMEs, and commit history in the innovationtreehouse and frc9577 organizations (read-only)
+- **Research FRC questions** — Chief Delphi, The Blue Alliance, Statbotics, FIRST sites, and the Treehouse programs wiki
 - **Fetch web pages** — retrieve content from an approved list of URLs (ask an admin to add URLs)
 
 ### Tips
@@ -36,7 +37,7 @@ Reply in any existing thread. ${AGENT_NAME} reads the full thread context plus r
 
 ### What ${AGENT_NAME} cannot do
 
-- Write to Google Drive or GitHub
+- Change GitHub (it can read repositories, issues and PRs, but not create or comment)
 - Access channels or DMs it has not been added to
 - Browse arbitrary websites (only pre-approved URLs)
 - Remember information between separate conversations (each thread is independent)

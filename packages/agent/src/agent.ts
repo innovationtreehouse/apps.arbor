@@ -3,6 +3,7 @@ import * as path from "path";
 import { randomUUID } from "crypto";
 import type { ImageContent } from "./slack.js";
 import { providerEnv, resolveModel } from "./provider.js";
+import { driveStatus, type DriveStatus } from "./retrieval/sources/drive.js";
 
 // Unset, non-numeric or non-positive values fall back to the default.
 function positiveIntEnv(name: string, fallback: number): number {
@@ -23,7 +24,8 @@ export async function runAgent(
   // One deadline across all attempts, so a hung MCP server cannot stall the SQS loop.
   const abortController = new AbortController();
   const timer = setTimeout(() => abortController.abort(), timeoutS * 1000);
-  const options = buildQueryOptions(systemPrompt, model, maxTokens, abortController);
+  const drive = await driveStatus();
+  const options = buildQueryOptions(systemPrompt + DRIVE_NOTE[drive], model, maxTokens, abortController, drive);
   let lastError: Error | undefined;
 
   try {
@@ -118,18 +120,24 @@ export const ALLOWED_TOOLS = [
   "mcp__github__get_pull_request",
   "mcp__github__list_pull_requests",
   "mcp__github__get_pull_request_files",
-  // GitHub — write
-  "mcp__github__create_issue",
-  "mcp__github__add_issue_comment",
-  "mcp__github__create_pull_request_review",
+  // GitHub is read-only: no create_issue / add_issue_comment / create_pull_request_review.
 ];
 
-function mcpServers(): Options["mcpServers"] {
-  // The gdrive MCP proxy is started at container boot (docker-entrypoint.sh)
-  // and exposes HTTP, so connecting is instant with no per-query cold start.
+// Tell the model why Drive tools are missing instead of letting it guess.
+const DRIVE_NOTE: Record<DriveStatus, string> = {
+  ready: "",
+  unavailable: "\n\nGoogle Drive is temporarily unavailable (its connector is not healthy), so Drive tools are " +
+    "not offered for this message. If the user needs Drive content, say Drive is temporarily unreachable; do not " +
+    "say you lack Drive access.",
+  "not configured": "\n\nGoogle Drive is not configured in this deployment; Drive tools are not available.",
+};
+
+function mcpServers(drive: DriveStatus): Options["mcpServers"] {
+  // The gdrive MCP proxy is started at container boot (docker-entrypoint.sh) and
+  // exposes HTTP; it is offered only while its /health says it is connected.
   const gdriveProxyUrl = process.env.GDRIVE_MCP_PROXY_URL;
   return {
-    ...(gdriveProxyUrl ? { gdrive: { type: "http" as const, url: gdriveProxyUrl } } : {}),
+    ...(gdriveProxyUrl && drive === "ready" ? { gdrive: { type: "http" as const, url: gdriveProxyUrl } } : {}),
     github: {
       command: "npx",
       args: ["-y", "@modelcontextprotocol/server-github"],
@@ -152,6 +160,7 @@ function buildQueryOptions(
   model: string | undefined,
   maxTokens: number | undefined,
   abortController: AbortController,
+  drive: DriveStatus,
 ): Options {
   return {
     model: resolveModel(model),
@@ -162,7 +171,7 @@ function buildQueryOptions(
       ...(maxTokens !== undefined ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxTokens) } : {}),
     },
     allowedTools: ALLOWED_TOOLS,
-    mcpServers: mcpServers(),
+    mcpServers: mcpServers(drive),
     maxTurns: positiveIntEnv("AGENT_MAX_TURNS", 30),
     abortController,
   };
@@ -174,7 +183,7 @@ async function runAgentOnce(
   images?: ImageContent[],
 ): Promise<string> {
   console.log("[agent] MCP servers:", JSON.stringify({
-    gdrive: !!process.env.GDRIVE_MCP_PROXY_URL,
+    gdrive: Object.keys(options.mcpServers ?? {}).includes("gdrive"),
     github: !!process.env.GITHUB_TOKEN,
     urlFetcher: true,
     images: images?.length ?? 0,
@@ -185,6 +194,9 @@ async function runAgentOnce(
   for await (const message of query({ prompt: sdkPrompt, options })) {
     if ("result" in message) {
       result = message.result;
+    }
+    if (message.type === "result") {
+      console.log(`[usage] ${JSON.stringify({ stage: "answer", cost: message.total_cost_usd, usage: message.usage })}`);
     }
   }
 
