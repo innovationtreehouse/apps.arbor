@@ -12,7 +12,7 @@ own: path matches for profiles, a fixed ladder for the model.
 `adjudicate` (after the review) asks the decision model whether the posted review is complete and,
 if not, which stronger model on LADDER should rerun it.
 """
-import json, os, re, subprocess, sys, urllib.request, uuid
+import json, os, re, subprocess, sys, time, urllib.request, uuid
 
 # The workflow points this at the default branch's copy, so a PR cannot edit its own reviewer.
 CFG = os.environ.get("AI_REVIEW_CFG", ".github/ai-review")
@@ -154,33 +154,28 @@ def api(repo, path):
     return [x for page in json.loads(gh("api", "--paginate", "--slurp", f"repos/{repo}/{path}")) for x in page]
 
 
-def pr_state(pr, repo):
-    meta = json.loads(gh("pr", "view", pr, "-R", repo, "--json", "title,body,files,additions,deletions,baseRefOid,headRefOid"))
-    files = [f["path"] for f in meta["files"]]
-    # The decision model gets the whole diff; fit_rounds trims older rounds to the state cap.
-    # On Jev the whole diff is cheap: over ~32 KB it only switches to a slower long-context mode.
+def pr_diff(pr, repo, base, head):
     try:
-        diff = gh("pr", "diff", pr, "-R", repo)
+        return gh("pr", "diff", pr, "-R", repo)
     except Exception as e:
         # GitHub refuses a diff over 300 files or 20,000 lines (HTTP 406). The checkout has full history.
         try:
-            diff = subprocess.check_output(["git", "diff", "--no-color", "--no-ext-diff",
-                                            f"{meta['baseRefOid']}...{meta['headRefOid']}"], text=True)
+            diff = subprocess.check_output(["git", "diff", "--no-color", "--no-ext-diff", f"{base}...{head}"], text=True)
             print(f"::notice::GitHub refused the PR diff ({e}); used git diff base...head", file=sys.stderr)
+            return diff
         except Exception as e2:
             print(f"::warning::could not read the diff ({e}; then {e2}); deciding on the file list", file=sys.stderr)
-            diff = ""
-    # Human comments (issue and review) from trusted authors carry reviewer-tier requests.
-    try:
-        talk = [c for p in ("issues", "pulls") for c in api(repo, f"{p}/{pr}/comments?per_page=100")
-                if _trusted(c) and c["user"]["login"] != BOT]
-        talk = [_clean(c["body"], 1500) for c in sorted(talk, key=lambda c: c["created_at"])[-20:]]
-    except Exception as e:
-        print(f"::warning::could not read PR comments ({e}); deciding without them", file=sys.stderr)
-        talk = []
+            return ""
+
+
+def pr_state(pr, repo):
+    meta = json.loads(gh("pr", "view", pr, "-R", repo, "--json", "title,files,additions,deletions,baseRefOid,headRefOid"))
+    files = [f["path"] for f in meta["files"]]
+    # The decision model gets the whole diff; fit_rounds trims older rounds to the state cap.
+    # On Jev the whole diff is cheap: over ~32 KB it only switches to a slower long-context mode.
+    diff = pr_diff(pr, repo, meta["baseRefOid"], meta["headRefOid"])
     # PR text is untrusted; it only ever appears here as data, never as instructions.
-    return files, {"untrusted_pr_title": meta["title"], "untrusted_pr_body": _clean(meta.get("body"), 8000),
-                   "untrusted_human_comments": talk, "changed_files": files,
+    return files, {"untrusted_pr_title": meta["title"], "changed_files": files,
                    "changed_lines": meta["additions"] + meta["deletions"], "file_count": len(files),
                    "untrusted_diff": diff}
 
@@ -317,9 +312,9 @@ def rerun_gate(probs, higher, p):
 
 
 def route_selftest():
-    ask = lambda b, *c: tier_request({"untrusted_pr_body": b, "untrusted_human_comments": list(c)})
-    assert ask("Please run the Argon lane") and ask("", "can we get a higher tier review?") and ask("a", "top review please")
-    assert not ask("Fix typo in the highway docs", "LGTM") and not ask("")
+    ask = lambda *t: tier_request({"untrusted_human_text": list(t)})
+    assert ask("use Opus") and ask("the high lane please") and ask("rerun this on Argon") and ask("a", "Please run the Argon lane")
+    assert not ask("Run the integration tier locally") and not ask("test tiers") and not ask("rename the argon variable", "LGTM") and not ask("")
     assert pick({"free": 0.02, "mid": 0.6, "high": 0.38}, ORDER) == "free"
     assert pick({"free": 0.0, "mid": 0.7, "high": 0.3}, ORDER) == "mid"
     assert pick({"free": 0.0, "mid": 0.05, "high": 0.9, "top": 0.05}, ORDER) == "high"
@@ -544,19 +539,37 @@ def first_round(pr, repo):
         return False
 
 
-# Logging and the first-round gate only; the decision model judges the request itself.
-REQUEST_RE = re.compile(r"argon|\btier\b|\b(?:high|top|mid|higher|stronger)\W+review|review\w*\W+(?:lane|tier)", re.I)
+# A request is a verb near a rung or model name, either order. Gate and log only; the model judges it.
+_V = r"(?:use|run|ask(?:ing)? for|want|please|request\w*|rerun|re-run)"
+_N = r"(?:free|low|mid|high|top|argon|opus|claude|deepseek|nemotron|flint|gemini|lane)(?![\w-])"
+REQUEST_RE = re.compile(rf"\b{_V}\b[^.\n]{{0,40}}\b{_N}|\b{_N}[^.\n]{{0,40}}\b{_V}\b", re.I)
+
+
+def request_state(pr, repo):
+    """PR text that may carry a tier request, from trusted authors only. Route-only: the judge never sees it."""
+    try:
+        meta = json.loads(gh("api", f"repos/{repo}/pulls/{pr}"))
+        texts = [(meta.get("created_at"), meta.get("body"))] if meta.get("author_association") in TRUSTED_ASSOC else []
+        for p in ("issues", "pulls"):
+            texts += [(c["created_at"], c["body"]) for c in api(repo, f"{p}/{pr}/comments?per_page=100")
+                      if _trusted(c) and c["user"]["login"] != BOT]
+        texts += [(r["submitted_at"], r["body"]) for r in api(repo, f"pulls/{pr}/reviews?per_page=100")
+                  if _trusted(r) and r["user"]["login"] != BOT and r.get("body") and r.get("submitted_at")]
+        return {"untrusted_human_text": [_clean(t, 4000) for _, t in sorted(texts, key=lambda x: x[0] or "")[-20:] if t]}
+    except Exception as e:
+        print(f"::warning::could not read PR text ({e}); deciding without it", file=sys.stderr)
+        return {"untrusted_human_text": []}
 
 
 def tier_request(state):
-    return bool(REQUEST_RE.search(" ".join([state.get("untrusted_pr_body") or ""] + (state.get("untrusted_human_comments") or []))))
+    return bool(REQUEST_RE.search("\n".join(state.get("untrusted_human_text") or [])))
 
 
 def route():
     pr, repo = os.environ["PR_NUMBER"], os.environ["GITHUB_REPOSITORY"]
     profiles = json.load(open(f"{CFG}/profiles.json"))
     files, state = pr_state(pr, repo)
-    state = with_prior_rounds(state, pr, repo)
+    state = with_prior_rounds(dict(state, **request_state(pr, repo)), pr, repo)
     hits = matched_profiles(profiles, files)
 
     try:
@@ -589,13 +602,27 @@ def route():
                              "instructions": "Which reviewer should review this pull request? Cost matters: pick the cheapest reviewer that will reliably catch real bugs in this change. Moving up a tier needs strong evidence that the cheaper reviewer would miss something serious. "
                              "If the PR description or a human comment asks for a specific or higher reviewer tier, default to granting it. Never go lower than the tier you would otherwise pick. Reject the request only when it is absurd for the change, for example a one-word, comment-only or whitespace change asking for the high or top tier."
                              + (" This is the PR's first review: prefer the lowest tier unless the description or a comment asks for a higher one." if lowest else ""),
-                             "criteria": rung_choice(ORDER)}})["reviewer"]
+                             "criteria": rung_choice(ORDER)},
+                "requested": {"type": "choice",
+                              "instructions": "Which reviewer tier, if any, does the PR description or a human comment ask for?",
+                              "criteria": dict(rung_choice(ORDER), none="No request for a specific or higher reviewer tier.")},
+                "grant": {"type": "noul",
+                          "instructions": "Grant the requested reviewer tier? Default to yes. Answer no only when the request is absurd for this change.",
+                          "criteria": {"true": "Grant the request, or there is no request.", "false": "The request is absurd for the change."}}})
+            grant = a['grant']['noul']
+            asked_tier = a["requested"]["choice"]
+            a = a["reviewer"]
             tier_probs = {k: round(v, 3) for k, v in a["probabilities"].items()}
             tier = pick(a["probabilities"], ORDER)
             t_by = f"{JEV} top choice {a['choice']}, " + ", ".join(f"{k}={v:.2f}" for k, v in a["probabilities"].items())
+            # A granted request is a floor: pick()'s bars must not undo it.
+            if asked_tier in RUNG and ORDER.index(asked_tier) > ORDER.index(tier) and grant >= 0.5:
+                t_by += f"; request {asked_tier} granted (p={grant:.2f}), raised from {tier}"
+                tier = asked_tier
         except Exception as e:
             print(f"::warning::Decision-model tier call failed ({e}); using the fixed ladder", file=sys.stderr)
-            tier, t_by, tier_probs = suggested, "fallback: fixed ladder", None
+            # A first round that only reached the model for a request phrase still defaults to the lowest tier.
+            tier, t_by, tier_probs = (ORDER[0], "fallback: first round, lowest tier", None) if lowest else (suggested, "fallback: fixed ladder", None)
 
     credit_override = None
     if tier != ORDER[0] and low_credit():
@@ -794,12 +821,13 @@ def recommend():
 
 
 ANSWER_MARK = "<!-- ai-answer:%s:%s -->"
-ASKS_AI = re.compile(r"@github-actions|\b(?:ai|bot|reviewer|review bot)\b", re.I)
+ASKS_AI = re.compile(r"@github-actions(?:\[bot\])?\b", re.I)
 MAX_ANSWERS = 5
+ANSWER_BUDGET = 300  # seconds; no new question starts after this
 
 
 def is_question(body):
-    return _clean(body, 4000).rstrip("`* \n").endswith("?")
+    return re.sub(r"<!--.*?-->", "", body or "", flags=re.S).strip().rstrip("`* \n").endswith("?")
 
 
 def pending_questions(review_comments, issue_comments):
@@ -810,24 +838,34 @@ def pending_questions(review_comments, issue_comments):
     bot_roots = {c["id"] for c in review_comments
                  if (c.get("user") or {}).get("login") == BOT and not c.get("in_reply_to_id")}
     found = []
+    # Newest first, and a question a later human reply follows is treated as settled by people.
     for kind, comments in (("r", review_comments), ("i", issue_comments)):
-        for c in comments:
+        for pos, c in reversed(list(enumerate(comments))):
             body = c.get("body") or ""
             if (c.get("user") or {}).get("login") == BOT or not _trusted(c) or not is_question(body) \
                     or f"{kind}:{c['id']}" in done:
                 continue
             root = c.get("in_reply_to_id") or c["id"]
+            if kind == "r" and any((x.get("in_reply_to_id") or x["id"]) == root and (x.get("user") or {}).get("login") != BOT
+                                   for x in comments[pos + 1:]):
+                continue
             if (kind == "r" and root in bot_roots) or ASKS_AI.search(body):
                 found.append((kind, c["id"], root, c))
+    found.sort(key=lambda f: f[3].get("created_at") or "", reverse=True)
     return found[:MAX_ANSWERS]
 
 
 def code_around(path, line, n=30):
-    """Lines of the checked-out head file around a comment; empty if the path is unsafe or missing."""
-    if not path or not line or path.startswith("/") or ".." in path.split("/"):
+    """Lines of the head file around a comment; empty unless the real path stays inside the repo
+    (symlinks followed) and outside the trusted config checkout."""
+    if not path or not line:
+        return ""
+    root = os.path.realpath(".")
+    real = os.path.realpath(os.path.join(root, path))
+    if not real.startswith(root + os.sep) or real.startswith(os.path.join(root, ".ai-review-base") + os.sep):
         return ""
     try:
-        lines = open(path, errors="replace").read().splitlines()
+        lines = open(real, errors="replace").read().splitlines()
     except OSError:
         return ""
     lo = max(0, line - n)
@@ -846,7 +884,7 @@ def ask_model(model, diff, q):
     req = urllib.request.Request("https://openrouter.ai/api/v1/chat/completions", data=body, headers={
         "Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}", "Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=300) as r:
-        return json.load(r)["choices"][0]["message"]["content"].strip()
+        return (json.load(r)["choices"][0]["message"]["content"] or "").strip()
 
 
 def answer():
@@ -859,23 +897,35 @@ def answer():
     if not todo or not model:
         print(f"answer: {len(todo)} question(s), model {model or 'none'}; nothing to do")
         return
-    diff = gh("pr", "diff", pr, "-R", repo)
+    meta = json.loads(gh("pr", "view", pr, "-R", repo, "--json", "baseRefOid,headRefOid"))
+    diff = pr_diff(pr, repo, meta["baseRefOid"], meta["headRefOid"])
+    start = time.monotonic()
     for kind, cid, root, c in todo:
-        thread = "\n".join(f"{(x.get('user') or {}).get('login')}: {_clean(x.get('body'), 1500)}"
-                           for x in rc if (x.get("in_reply_to_id") or x["id"]) == root) if kind == "r" else ""
-        text = ask_model(model, diff, {"path": c.get("path") if kind == "r" else "", "line": c.get("line") or c.get("original_line"),
-                                       "hunk": c.get("diff_hunk", ""), "thread": thread, "question": _clean(c["body"], 4000)})
-        mark = ANSWER_MARK % (kind, cid)
-        if kind == "r":
-            gh("api", f"repos/{repo}/pulls/{pr}/comments/{root}/replies", "-f", f"body={mark}\n{text}")
-        else:
-            quote = "> " + _clean(c["body"], 200).replace("\n", "\n> ")
-            gh("api", f"repos/{repo}/issues/{pr}/comments", "-f", f"body={mark}\n{quote}\n\n{text}")
-        print(f"answered {kind}:{cid}")
+        if time.monotonic() - start > ANSWER_BUDGET:
+            print("::warning::answer time budget spent; remaining questions wait for the next round")
+            break
+        try:
+            thread = "\n".join(f"{(x.get('user') or {}).get('login')}: {_clean(x.get('body'), 1500)}"
+                               for x in rc if (x.get("in_reply_to_id") or x["id"]) == root) if kind == "r" else ""
+            line = c.get("line") if c.get("side") == "RIGHT" else None  # LEFT or outdated: no head-file excerpt
+            text = ask_model(model, diff, {"path": c.get("path") if kind == "r" else "", "line": line,
+                                           "hunk": c.get("diff_hunk", ""), "thread": thread, "question": _clean(c["body"], 4000)})
+            text = re.sub(r"<!--.*?-->", "", text, flags=re.S).strip()  # a forged marker would hide a question
+            if not text:
+                continue
+            mark = ANSWER_MARK % (kind, cid)
+            if kind == "r":
+                gh("api", f"repos/{repo}/pulls/{pr}/comments/{root}/replies", "-f", f"body={mark}\n{text}")
+            else:
+                quote = "> " + _clean(c["body"], 200).replace("\n", "\n> ")
+                gh("api", f"repos/{repo}/issues/{pr}/comments", "-f", f"body={mark}\n{quote}\n\n{text}")
+            print(f"answered {kind}:{cid}")
+        except Exception as e:
+            print(f"::warning::could not answer {kind}:{cid}: {getattr(e, 'stderr', None) or e}", file=sys.stderr)
 
 
 def answer_selftest():
-    u = lambda n, a="MEMBER": {"login": n, "type": "User"}
+    u = lambda n: {"login": n}
     rc = [{"id": 1, "user": u(BOT), "body": "finding"},
           {"id": 2, "user": u("ann"), "author_association": "MEMBER", "body": "why is this needed?", "in_reply_to_id": 1},
           {"id": 3, "user": u("ann"), "author_association": "MEMBER", "body": "fixed.", "in_reply_to_id": 1},
@@ -887,9 +937,29 @@ def answer_selftest():
           {"id": 11, "user": u("bo"), "author_association": "OWNER", "body": "Joe, is this safe?"},
           {"id": 12, "user": u(BOT), "body": "Should we merge?"}]
     got = [(k, i) for k, i, _, _ in pending_questions(rc, ic)]
-    assert got == [("r", 2), ("i", 10)], got
+    assert got == [("i", 10)], got
     assert is_question("why?\n```") and is_question("why? ") and not is_question("ok.")
     assert code_around("../etc/passwd", 3) == "" and code_around("/etc/passwd", 3) == ""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        cwd = os.getcwd()
+        os.chdir(d)
+        try:
+            open("a.txt", "w").write("one\ntwo\n")
+            os.symlink("/etc/hostname", "ln")
+            os.makedirs(".ai-review-base")
+            open(".ai-review-base/b.txt", "w").write("x\n")
+            assert code_around("a.txt", 1).startswith("1: one")
+            assert code_around("ln", 1) == "" and code_around(".ai-review-base/b.txt", 1) == "" and code_around("a.txt", None) == ""
+        finally:
+            os.chdir(cwd)
+    c2 = [{"id": 1, "user": u(BOT), "body": "f"}, {"id": 2, "user": u("ann"), "author_association": "MEMBER", "body": "why?", "in_reply_to_id": 1, "created_at": "1"},
+          {"id": 3, "user": u("bob"), "author_association": "MEMBER", "body": "because x", "in_reply_to_id": 1, "created_at": "2"},
+          {"id": 4, "user": u("ann"), "author_association": "MEMBER", "body": "Should the AI review rerun?", "created_at": "3"},
+          {"id": 5, "user": u("ann"), "author_association": "MEMBER", "body": "a" * 5000 + "?", "created_at": "4"},
+          {"id": 6, "user": u("ann"), "author_association": "MEMBER", "body": "@github-actions why?", "created_at": "5"}]
+    assert [i for _, i, _, _ in pending_questions(c2, [])] == [6], pending_questions(c2, [])
+    assert is_question("a" * 5000 + "? <!-- x -->") and not ASKS_AI.search("bot reviewer AI")
     print("answer selftest ok")
 
 
