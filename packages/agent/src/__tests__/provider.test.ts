@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_MODEL, DEFAULT_OPENROUTER_BASE_URL, openRouterBaseUrl, providerEnv, resolveModel } from "../provider.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_MODEL, DEFAULT_OPENROUTER_BASE_URL, chat, emptyUsage, openRouterBaseUrl, parseJsonObject, providerEnv, resolveModel } from "../provider.js";
 
 const saved = { k: process.env.OPENROUTER_API_KEY, b: process.env.OPENROUTER_BASE_URL };
 beforeEach(() => {
@@ -58,5 +58,61 @@ describe("resolveModel", () => {
 
   it("defaults when nothing is set", () => {
     expect(resolveModel(undefined)).toBe(DEFAULT_MODEL);
+  });
+});
+
+describe("chat", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("posts to OpenRouter chat completions and adds usage", async () => {
+    process.env.OPENROUTER_API_KEY = "sk-or-x";
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: '{"a":1}' } }],
+      usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0.25 },
+    })));
+    vi.stubGlobal("fetch", fetchMock);
+    const usage = emptyUsage();
+    expect(await chat("google/x", "hi", usage)).toBe('{"a":1}');
+    expect(await chat("google/x", "hi", usage)).toBe('{"a":1}');
+    expect(usage).toEqual({ calls: 2, prompt_tokens: 20, completion_tokens: 10, cost: 0.5 });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://openrouter.ai/api/v1/chat/completions");
+    expect(init.headers.Authorization).toBe("Bearer sk-or-x");
+    expect(JSON.parse(init.body)).toMatchObject({ model: "google/x", messages: [{ role: "user", content: "hi" }] });
+  });
+
+  it("throws on HTTP errors and without a key", async () => {
+    await expect(chat("google/x", "hi", emptyUsage())).rejects.toThrow("OPENROUTER_API_KEY");
+    process.env.OPENROUTER_API_KEY = "sk-or-x";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("no", { status: 402 })));
+    await expect(chat("google/x", "hi", emptyUsage())).rejects.toThrow("OpenRouter HTTP 402");
+  });
+
+  it("tolerates a response with no choices or usage", async () => {
+    process.env.OPENROUTER_API_KEY = "sk-or-x";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}")));
+    const usage = emptyUsage();
+    expect(await chat("google/x", "hi", usage)).toBe("");
+    expect(usage.calls).toBe(1);
+  });
+});
+
+describe("parseJsonObject", () => {
+  it.each([
+    ['{"picked":[1]}', { picked: [1] }],
+    ['Sure!\n```json\n{"picked":[2],"reason":"x"}\n```', { picked: [2], reason: "x" }],
+    ["no json here", undefined],
+    ["{not json}", undefined],
+    ["[1,2]", undefined],
+  ])("%s", (text, expected) => {
+    expect(parseJsonObject(text)).toEqual(expected);
+  });
+});
+
+describe("resolveModel for research stages", () => {
+  it("uses the stored id, then the env value, then the fallback", () => {
+    expect(resolveModel("a/b", "c/d", "e/f")).toBe("a/b");
+    expect(resolveModel(undefined, "c/d", "e/f")).toBe("c/d");
+    expect(resolveModel(undefined, undefined, "e/f")).toBe("e/f");
   });
 });
