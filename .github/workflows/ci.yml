@@ -37,6 +37,32 @@ jobs:
           path: coverage/
           retention-days: 14
 
+  lint:
+    name: lint (changed files)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # needs the base branch to diff against
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint files changed in this PR
+        # Only changed files, so code that predates the lint config does not fail open PRs.
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          git diff --name-only --diff-filter=d "origin/$BASE...HEAD" -- '*.ts' '*.mjs' \
+            | xargs -r -d '\n' npm run lint --
+
   dev:
     name: test / dev
     runs-on: ubuntu-latest

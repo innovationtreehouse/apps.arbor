@@ -10,11 +10,15 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:integration": "vitest run --config vitest.integration.config.ts"
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "lint": "eslint --max-warnings 0 --pass-on-no-patterns"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^4.1.0",
     "aws-sdk-client-mock": "^4.1.0",
+    "eslint": "^9.39.5",
+    "prettier": "^3.9.9",
+    "typescript-eslint": "^8.71.1",
     "vitest": "^4.1.0"
   }
 }
