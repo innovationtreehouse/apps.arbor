@@ -31,6 +31,29 @@ if (!SERVICE_ACCOUNT_PATH) {
 }
 
 async function main() {
+  // Serve /health first: 503 while google-docs-mcp starts, 200 once connected. The
+  // agent checks it per message, so a slow or failed start degrades Drive, not the bot.
+  let ready = false;
+  let httpTransport: StreamableHTTPServerTransport | undefined;
+  const httpServer = createServer(
+    async (req: IncomingMessage, res: ServerResponse) => {
+      if (req.url === "/health") {
+        res.writeHead(ready ? 200 : 503, { "Content-Type": "text/plain" });
+        res.end(ready ? "ok" : "starting");
+        return;
+      }
+      if (req.url === "/mcp" && httpTransport) {
+        await httpTransport.handleRequest(req, res);
+        return;
+      }
+      res.writeHead(req.url === "/mcp" ? 503 : 404);
+      res.end();
+    }
+  );
+  httpServer.listen(PORT, "127.0.0.1", () => {
+    console.log(`[gdrive-proxy] HTTP listening on http://127.0.0.1:${PORT} (health 503 until ready)`);
+  });
+
   console.log("[gdrive-proxy] Spawning google-docs-mcp (auth may take ~5s)...");
 
   const client = new Client(
@@ -52,9 +75,6 @@ async function main() {
   });
 
   await client.connect(clientTransport);
-  console.log("[gdrive-proxy] google-docs-mcp ready.");
-
-  // --- HTTP MCP server (Streamable HTTP transport) ---
 
   const server = new Server(
     { name: "gdrive-proxy", version: "1.0.0" },
@@ -69,33 +89,14 @@ async function main() {
     return client.callTool(req.params);
   });
 
-  const httpTransport = new StreamableHTTPServerTransport({
+  httpTransport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
   });
-
   await server.connect(httpTransport);
+  ready = true;
+  console.log(`[gdrive-proxy] google-docs-mcp ready → http://127.0.0.1:${PORT}/mcp`);
 
-  const httpServer = createServer(
-    async (req: IncomingMessage, res: ServerResponse) => {
-      if (req.url === "/health") {
-        res.writeHead(200, { "Content-Type": "text/plain" });
-        res.end("ok");
-        return;
-      }
-      if (req.url === "/mcp") {
-        await httpTransport.handleRequest(req, res);
-        return;
-      }
-      res.writeHead(404);
-      res.end();
-    }
-  );
-
-  httpServer.listen(PORT, "127.0.0.1", () => {
-    console.log(`[gdrive-proxy] HTTP MCP ready → http://127.0.0.1:${PORT}/mcp`);
-  });
-
-  // If the stdio process dies, crash the proxy so the container restarts.
+  // If the stdio process dies, exit; docker-entrypoint.sh restarts the proxy.
   client.onclose = () => {
     console.error("[gdrive-proxy] google-docs-mcp process closed unexpectedly");
     process.exit(1);
