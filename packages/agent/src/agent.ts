@@ -4,6 +4,12 @@ import { randomUUID } from "crypto";
 import type { ImageContent } from "./slack.js";
 import { providerEnv, resolveModel } from "./provider.js";
 
+// Unset, non-numeric or non-positive values fall back to the default.
+function positiveIntEnv(name: string, fallback: number): number {
+  const n = parseInt(process.env[name] ?? "", 10);
+  return n > 0 ? n : fallback;
+}
+
 export async function runAgent(
   prompt: string,
   systemPrompt: string,
@@ -12,7 +18,7 @@ export async function runAgent(
   images?: ImageContent[],
 ): Promise<string> {
   const maxRetries = parseInt(process.env.MAX_MCP_RETRIES ?? "2", 10);
-  const timeoutS = parseInt(process.env.AGENT_TIMEOUT_S ?? "300", 10);
+  const timeoutS = positiveIntEnv("AGENT_TIMEOUT_S", 300);
   // One deadline across all attempts, so a hung MCP server cannot stall the SQS loop.
   const abortController = new AbortController();
   const timer = setTimeout(() => abortController.abort(), timeoutS * 1000);
@@ -156,7 +162,7 @@ function buildQueryOptions(
     },
     allowedTools: ALLOWED_TOOLS,
     mcpServers: mcpServers(),
-    maxTurns: parseInt(process.env.AGENT_MAX_TURNS ?? "30", 10),
+    maxTurns: positiveIntEnv("AGENT_MAX_TURNS", 30),
     abortController,
   };
 }

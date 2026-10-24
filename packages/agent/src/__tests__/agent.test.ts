@@ -353,4 +353,33 @@ describe("runAgent", () => {
     delete process.env.AGENT_TIMEOUT_S;
     vi.useRealTimers();
   });
+
+  it("falls back to 30 turns when AGENT_MAX_TURNS is not a positive number", async () => {
+    vi.mocked(query).mockImplementation(async function* () { yield { result: "ok" }; });
+    process.env.AGENT_MAX_TURNS = "lots";
+    await runAgent("prompt", "system");
+    process.env.AGENT_MAX_TURNS = "0";
+    await runAgent("prompt", "system");
+    delete process.env.AGENT_MAX_TURNS;
+    expect(vi.mocked(query).mock.calls[0][0].options?.maxTurns).toBe(30);
+    expect(vi.mocked(query).mock.calls[1][0].options?.maxTurns).toBe(30);
+  });
+
+  it("falls back to the 300 s deadline when AGENT_TIMEOUT_S is not a positive number", async () => {
+    vi.useFakeTimers();
+    process.env.AGENT_TIMEOUT_S = "abc";
+    vi.mocked(query).mockImplementation(async function* ({ options }) {
+      const signal = options!.abortController!.signal;
+      await new Promise((resolve) => signal.addEventListener("abort", resolve));
+    });
+
+    const resultPromise = runAgent("prompt", "system");
+    const assertion = expect(resultPromise).rejects.toThrow("Agent timed out after 300s");
+    await vi.advanceTimersByTimeAsync(299_999);
+    expect(vi.mocked(query)).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await assertion;
+    delete process.env.AGENT_TIMEOUT_S;
+    vi.useRealTimers();
+  });
 });
