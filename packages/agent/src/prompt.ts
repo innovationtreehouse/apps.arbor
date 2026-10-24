@@ -105,8 +105,8 @@ export function buildPrompt(
   const context = formatMessages(prior);
 
   let result = (template || DEFAULT_USER_PROMPT_TEMPLATE)
-    .replace("{{context}}", context)
-    .replace("{{message}}", currentText);
+    .replace("{{context}}", () => context)
+    .replace("{{message}}", () => currentText);
 
   if (channelContext.length > 0) {
     const channelSummary = formatMessages(channelContext);
