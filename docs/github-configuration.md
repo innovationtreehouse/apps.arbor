@@ -1,6 +1,6 @@
 # GitHub Actions Configuration
 
-The `claude.yml` workflow automates issue implementation, and replies to comments on Claude's own PRs, using Claude Code. It requires two secrets and one optional variable, configured at **Settings → Secrets and variables → Actions**.
+Two workflows use AI. `claude.yml` implements issues labeled `claude` and replies to comments on Claude's own PRs, using Claude Code. `openrouter-pr-review.yml` reviews pull requests labeled `ai-review` (see [AI pull-request review](#ai-pull-request-review)). Secrets and variables are configured at **Settings → Secrets and variables → Actions**.
 
 ---
 
@@ -8,8 +8,9 @@ The `claude.yml` workflow automates issue implementation, and replies to comment
 
 | Secret | Description |
 |---|---|
-| `ANTHROPIC_API_TOKEN` | Anthropic API key passed to `claude-code-action` in every Claude job |
-| `AGENT_TOKEN` | GitHub PAT with `repo` scope. Used by Claude to read issues and PRs, create and push branches, open pull requests, and post review comments. Must be a PAT (not the built-in `GITHUB_TOKEN`) so that PRs created by Claude can themselves trigger workflows |
+| `ANTHROPIC_API_TOKEN` | Anthropic API key passed to `claude-code-action` in every `claude.yml` job |
+| `OPENROUTER_API_KEY` | OpenRouter key for `openrouter-pr-review.yml` (an org secret scoped to this repo works) |
+| `AGENT_TOKEN` | GitHub PAT with `repo` scope. Used by Claude to read issues and PRs, create and push branches, open pull requests, and reply to PR comments. Must be a PAT (not the built-in `GITHUB_TOKEN`) so that PRs created by Claude can themselves trigger workflows |
 
 ---
 
@@ -37,7 +38,7 @@ via GitHub REST API   ←──────── Replies to PR comments
                           ANTHROPIC_API_TOKEN
 ```
 
-The built-in `GITHUB_TOKEN` (auto-provided by Actions) is used only in `ci.yml` for uploading coverage artifacts — no configuration required.
+The built-in `GITHUB_TOKEN` (auto-provided by Actions) needs no configuration. `openrouter-pr-review.yml` uses it to read the PR, post and edit reviews, and set the `ai-recommends-approve` label; `ci.yml` uses it for coverage artifacts and the `ai-review` label reminder; the deploy workflows use it to push images to ghcr.io and comment on merged PRs.
 
 ---
 
@@ -54,12 +55,20 @@ When creating the `AGENT_TOKEN` personal access token:
 
 ## AI pull-request review
 
-`openrouter-pr-review.yml` reviews pull requests with the OpenRouter AI review. It is separate from `claude.yml`.
+`openrouter-pr-review.yml` reviews pull requests with the OpenRouter AI review, using the [innovationtreehouse fork](https://github.com/innovationtreehouse/openrouter-pr-review-action) of `openrouter-pr-review-action`, pinned by commit. It is the same setup as apps.checkin.
 
-- **Opt-in by label.** It runs only on PRs labeled `ai-review`. Applying a label needs triage access, so the public cannot trigger it. Every PR should carry the label; add it when you open the PR or mark it ready.
-- **Routing.** `.github/scripts/ai-review-route.py` asks TypeSafe Jev 1.14 which review checklists in `.github/ai-review/profiles.json` apply and which reviewer runs, from a fixed ladder: NVIDIA Nemotron Super VL (free), GLM-5.3, Gemini 4 Argon, Claude Opus 5.5. Escalating to a costlier reviewer needs much more confidence. After the review posts, Jev judges whether it was complete and may rerun it once on a stronger model.
-- **Context.** Every review prompt carries `.github/ai-review/instructions.md` and the PR's earlier review comments, aligned to the diff.
-- **Recommendation.** The final review shows an advisory `Recommendation:` line; approve also applies the `ai-recommends-approve` label. A maintainer approves.
-- **Cost.** Posted reviews show a cost word (free, less than a penny, pennies, dimes, quarters, a dollar, 2 dollars, ...), not the dollar amount.
-- **Secret.** `OPENROUTER_API_KEY` (an org secret scoped to this repo works). Without it the review is skipped with an error annotation.
+- **Opt-in by label.** It runs only on PRs labeled `ai-review`. Applying a label needs triage access, so the public cannot spend the key. Drafts, fork PRs and Dependabot PRs are skipped. Adding the label starts a review; later pushes re-review while it stays on.
+- **Trusted config.** The routing script, `.github/ai-review/instructions.md` and `.github/ai-review/profiles.json` are read from the default branch, never from the PR. A change to them takes effect after it merges. Until they are on `main`, no review runs.
+- **Routing.** `.github/scripts/ai-review-route.py` asks a decision model (`DECISION_MODEL` in the workflow, now `baseten/mammoth-1:free`) which checklists in `profiles.json` apply and which reviewer runs. The ladder is NVIDIA Nemotron 3 Ultra (free), DeepSeek V4 Pro, Gemini 4 Argon, Claude Opus 5.5. A PR's first review runs on the free rung unless the fixed ladder says otherwise. Escalating to a costlier reviewer needs much more confidence. With under $5 of OpenRouter credit left, the review runs on the free rung.
+- **Completeness.** After the review posts, the decision model judges whether it is complete and may rerun it once on a stronger model.
+- **Context.** Every review prompt carries `instructions.md`, the matching checklists, and the PR's earlier review comments, aligned to the diff. Only comments from repo members, collaborators and the review bot are included.
+- **Recommendation.** The final review shows an advisory `Recommendation:` line. Approve also applies the `ai-recommends-approve` label, which must exist in the repository. The review never submits an approval.
+- **Cost.** Posted reviews show a cost word (free, less than a penny, pennies, dimes, quarters, a dollar, 2 dollars, ...), not the dollar amount. Exact figures stay in the workflow log.
+- **Failure.** A run that produces no usable verdict fails the job so it can be re-run. Without `OPENROUTER_API_KEY` the route step fails with an error annotation.
 
+### Review and approval sequence
+
+1. Every PR carries the `ai-review` label. Add it when you open the PR or mark it ready.
+2. The AI review round posts first.
+3. Agent and human reviews build on its findings and reply on its threads.
+4. Its recommendation is advisory. A maintainer approves.

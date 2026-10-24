@@ -85,7 +85,7 @@ The `ci.yml` workflow runs on every pull request and on every push to `main`. It
 2. Runs tests with coverage (`npm run test:coverage`)
 3. Uploads the coverage report as an artifact (retained for 14 days)
 
-The Claude automation workflow (`claude.yml`) works issues labeled `claude` and replies to comments on its own PRs. Pull requests are reviewed by the OpenRouter AI review (`openrouter-pr-review.yml`) when they carry the `ai-review` label. See [github-configuration.md](github-configuration.md) for both workflows and their secrets.
+The Claude automation workflow (`claude.yml`) works issues labeled `claude` and replies to comments on its own PRs. Pull requests are reviewed by the OpenRouter AI review (`openrouter-pr-review.yml`) when they carry the `ai-review` label. See [github-configuration.md](github-configuration.md) for both workflows and their secrets. After editing `.github/scripts/ai-review-route.py`, run `python3 .github/scripts/ai-review-route.py route-selftest` and `scrub-selftest`; each prints `route selftest ok` or `scrub selftest ok` on success.
 
 ---
 

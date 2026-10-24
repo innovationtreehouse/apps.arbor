@@ -4,43 +4,45 @@
   "paths": [
    "packages/lambda/src/**"
   ],
-  "instructions": "The Lambda is the public entry point. Slack request signatures must be verified before any work, with a timestamp window against replay; the rate limiter must hold per user and per channel; nothing from the request may reach a shell, a query or a log unescaped."
+  "instructions": "The Lambda is the public entry point. verifySlackSignature must run on every /slack/events and /slack/commands request before any work, with its 300-second timestamp window against replay. ChannelRateLimiter is per channel only and sets a holdoff flag the agent reads; there is no per-user limit, so do not report its absence. Nothing from the request may reach a shell, a query or a log unescaped."
  },
  {
   "name": "model-and-secrets",
   "paths": [
-   "packages/agent/src/provider.ts",
    "packages/agent/src/agent.ts",
+   "packages/agent/src/provider.ts",
    "packages/agent/src/index.ts",
+   "packages/agent/src/admin.ts",
    "packages/agent/Dockerfile",
    "packages/agent/docker-entrypoint.sh"
   ],
-  "instructions": "API keys and tokens come only from the environment or Secrets Manager and never reach a log, a Slack message or a tool result. The model ID and endpoint must stay OpenRouter's (provider/model). Any env passed to the SDK or to MCP subprocesses must not widen what secrets those processes see."
+  "instructions": "API keys and tokens come only from the environment or Secrets Manager and never reach a log, a Slack message or a tool result. The /squirrel-admin check output shows at most a key prefix. Model ID and provider settings are read in one place; read the code on the head commit for the current provider and do not assume one. Env passed to the SDK subprocess or to an MCP server (mcpServers in agent.ts) must not give that process a secret it does not use."
  },
  {
   "name": "agent-tools",
   "paths": [
+   "packages/agent/src/agent.ts",
    "packages/agent/src/gdrive-mcp-proxy.ts",
-   "packages/mcp-url-fetcher/**",
-   "packages/agent/src/user-docs.ts"
+   "packages/mcp-url-fetcher/**"
   ],
-  "instructions": "The agent acts for Slack users. Tool allowlists must stay narrow; the URL fetcher must refuse private, link-local and metadata addresses and follow redirects only within the allowlist; Drive and GitHub writes must stay within the documented scopes. A prompt-injected document must not be able to widen what the agent can do."
+  "instructions": "The agent acts for Slack users. allowedTools in packages/agent/src/agent.ts is the tool allowlist; a new tool, especially a write tool, must be named in the PR and justified. url_fetch serves only URLs that match the admin-managed allowlist exactly or by a '*' prefix (UrlConfig.isAllowed); a change that loosens that match is a bug. A prompt-injected document must not be able to widen what the agent can do."
  },
  {
   "name": "admin-commands",
   "paths": [
-   "packages/agent/src/admin.ts",
-   "packages/agent/src/slack.ts"
+   "packages/lambda/src/index.ts",
+   "packages/agent/src/admin.ts"
   ],
-  "instructions": "Admin commands change behaviour for everyone; check who may run each one and that the check happens before any change is stored. Slack replies must not echo secrets or other users' private data."
+  "instructions": "/squirrel-admin changes behaviour for everyone. The Lambda (handleCommand in packages/lambda/src/index.ts) checks the caller against ADMIN_USER_IDS before it replies or queues anything; packages/agent/src/admin.ts trusts that check. A new subcommand must go through the same path. Replies must not echo secrets or other users' private data."
  },
  {
   "name": "migrations",
   "paths": [
    "packages/db/drizzle/**",
-   "packages/db/src/**"
+   "packages/db/src/schema.ts",
+   "packages/db/src/schema-sqlite.ts"
   ],
-  "instructions": "Schema changes must be backward compatible with the agent and Lambda versions still running during a deploy: add before you use, never rename or drop in the same release. Generated drizzle files must match the schema source."
+  "instructions": "The deploy runs the migration task before the new Lambda and agent start, while the old versions still run. Schema changes must work with both: add before you use, never rename or drop in the same release. A change to schema.ts needs a generated migration in packages/db/drizzle and a matching change to schema-sqlite.ts."
  },
  {
   "name": "deploy",

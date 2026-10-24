@@ -8,7 +8,7 @@ Arbor runs Squirrel, a Slack bot that uses the Claude Agent SDK to answer questi
 - [How It Works](docs/operation.md) — end-to-end walkthrough of message flow, agent behavior, and admin commands
 - [AWS Setup](docs/aws-setup.md) — step-by-step procedure for provisioning all AWS infrastructure
 - [Runtime Configuration](docs/configuration.md) — environment variables for Lambda and the ECS agent
-- [GitHub Actions Configuration](docs/github-configuration.md) — repository secrets and variables for the Claude workflow
+- [GitHub Actions Configuration](docs/github-configuration.md) — repository secrets and variables for the Claude and AI review workflows
 
 ## Project Structure
 
@@ -70,7 +70,7 @@ Deployment is not yet automated. The recommended approach is:
 
 ### 6. GitHub Actions secrets
 
-See [GitHub Actions Configuration](docs/github-configuration.md). Required: `ANTHROPIC_API_TOKEN` and `AGENT_TOKEN` (PAT with `repo` scope).
+See [GitHub Actions Configuration](docs/github-configuration.md). Required: `ANTHROPIC_API_TOKEN` and `AGENT_TOKEN` (PAT with `repo` scope) for `claude.yml`, and `OPENROUTER_API_KEY` for the AI pull-request review.
 
 ## Development
 
