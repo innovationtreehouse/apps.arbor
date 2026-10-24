@@ -5,14 +5,12 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "tsc -p packages/db && tsc -p packages/logger && npm run -w @arbor/lambda build && tsc --build packages/agent packages/mcp-url-fetcher",
+    "build": "tsc --build && npm run -w @arbor/lambda build",
     "clean": "rm -rf packages/*/dist",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:integration": "vitest run --config vitest.integration.config.ts",
-    "test:dev": "vitest run --config vitest.integration.config.ts packages/db",
-    "test:integration:local": "bash scripts/test-integration.sh"
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^4.1.0",
