@@ -32,7 +32,7 @@ export class UrlConfig {
     const exact = this.urls.get(url);
     if (exact) return exact;
     for (const [key, entry] of this.urls) {
-      if (key.endsWith("*") && url.startsWith(key.slice(0, -1))) return entry;
+      if (key.endsWith("*") && prefixMatches(key.slice(0, -1), url)) return entry;
     }
     return undefined;
   }
@@ -47,5 +47,18 @@ export class UrlConfig {
 
   getDescription(url: string): string {
     return this.match(url)?.description ?? "";
+  }
+}
+
+// Same origin, and the path continues at a boundary: "https://a.com/docs" allows
+// /docs, /docs/x and /docs?q but not /docs-evil; "https://a.com" never allows a.com.evil.com.
+export function prefixMatches(prefix: string, url: string): boolean {
+  try {
+    const p = new URL(prefix), u = new URL(url);
+    const pp = p.pathname + p.search, up = u.pathname + u.search;
+    if (p.origin !== u.origin || !up.startsWith(pp)) return false;
+    return pp.endsWith("/") || up.length === pp.length || "/?".includes(up[pp.length]);
+  } catch {
+    return false;
   }
 }
