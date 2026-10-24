@@ -58,3 +58,18 @@ function toRecord(row: typeof auditLog.$inferSelect): AuditRecord {
   };
 }
 /* v8 ignore stop */
+
+export interface AuditLogger {
+  log(record: NewAuditRecord): Promise<void>;
+}
+
+/** Wraps an AuditStore so a failed audit write never fails the reply. */
+export function createAuditLogger(store: AuditStore): AuditLogger {
+  return {
+    async log(record: NewAuditRecord): Promise<void> {
+      await store.write(record).catch((err) => {
+        console.error("[audit] write failed:", err);
+      });
+    },
+  };
+}

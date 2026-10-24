@@ -9,7 +9,6 @@
   },
   "dependencies": {
     "@arbor/db": "*",
-    "@arbor/logger": "*",
     "@aws-sdk/client-ecs": "^3.0.0",
     "@aws-sdk/client-sqs": "^3.0.0"
   },

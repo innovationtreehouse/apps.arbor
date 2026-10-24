@@ -11,7 +11,6 @@ COPY package.json tsconfig.base.json ./
 # Copy package manifests (all packages the agent depends on)
 COPY packages/agent/package.json ./packages/agent/
 COPY packages/db/package.json ./packages/db/
-COPY packages/logger/package.json ./packages/logger/
 COPY packages/mcp-url-fetcher/package.json ./packages/mcp-url-fetcher/
 
 # Install all dependencies (including native modules like better-sqlite3)
@@ -22,14 +21,11 @@ COPY packages/agent/src ./packages/agent/src
 COPY packages/agent/tsconfig.json ./packages/agent/
 COPY packages/db/src ./packages/db/src
 COPY packages/db/tsconfig.json ./packages/db/
-COPY packages/logger/src ./packages/logger/src
-COPY packages/logger/tsconfig.json ./packages/logger/
 COPY packages/mcp-url-fetcher/src ./packages/mcp-url-fetcher/src
 COPY packages/mcp-url-fetcher/tsconfig.json ./packages/mcp-url-fetcher/
 
 # Build
 RUN npm run -w @arbor/db build
-RUN npm run -w @arbor/logger build
 RUN npm run -w @arbor/mcp-url-fetcher build
 RUN npm run -w @arbor/agent build
 
@@ -61,8 +57,6 @@ COPY --from=builder /build/packages/agent/dist ./packages/agent/dist
 COPY --from=builder /build/packages/agent/package.json ./packages/agent/
 COPY --from=builder /build/packages/db/dist ./packages/db/dist
 COPY --from=builder /build/packages/db/package.json ./packages/db/
-COPY --from=builder /build/packages/logger/dist ./packages/logger/dist
-COPY --from=builder /build/packages/logger/package.json ./packages/logger/
 COPY --from=builder /build/packages/mcp-url-fetcher/dist ./packages/mcp-url-fetcher/dist
 COPY --from=builder /build/packages/mcp-url-fetcher/package.json ./packages/mcp-url-fetcher/
 COPY --from=builder /build/node_modules ./node_modules

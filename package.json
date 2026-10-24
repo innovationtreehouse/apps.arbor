@@ -5,7 +5,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "tsc -p packages/db && tsc -p packages/logger && npm run -w @arbor/lambda build && tsc --build packages/agent packages/mcp-url-fetcher",
+    "build": "tsc -p packages/db && npm run -w @arbor/lambda build && tsc --build packages/agent packages/mcp-url-fetcher",
     "clean": "rm -rf packages/*/dist",
     "test": "vitest run",
     "test:watch": "vitest",

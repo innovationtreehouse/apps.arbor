@@ -35,8 +35,7 @@ Coverage is written to `coverage/` and uploaded as a workflow artifact on every 
 |---|---|
 | `packages/lambda` | Signature verification, event routing, all admin subcommands including `audit` and `audit-thread` |
 | `packages/agent` | Prompt building, Slack client helpers, agent runner, event processing, MCP retry behaviour |
-| `packages/db` | SQLite store implementations (in-memory) and the `createStores` factory |
-| `packages/logger` | `createAuditLogger` error-swallowing wrapper |
+| `packages/db` | SQLite store implementations (in-memory), the `createStores` factory, and the `createAuditLogger` error-swallowing wrapper |
 | `packages/mcp-url-fetcher` | URL config loading, `url_list` and `url_fetch` tool handlers |
 
 AWS SDK calls are mocked with `aws-sdk-client-mock`. Slack API calls and the Claude Agent SDK are mocked with `vi.mock()`. No network calls are made during tests.
@@ -94,8 +93,8 @@ The Claude automation workflow (`claude.yml`) is triggered by the CI workflow co
 ```
 packages/
   db/               @arbor/db — Drizzle schema, UrlStore, ConfigStore, AuditStore,
-                                PostgreSQL and SQLite implementations, createStores factory
-  logger/           @arbor/logger — createAuditLogger (error-swallowing audit wrapper)
+                                PostgreSQL and SQLite implementations, createStores factory,
+                                createAuditLogger (error-swallowing audit wrapper)
   agent/            ECS container — SQS polling loop, Claude agent runner, audit logging
   lambda/           Lambda function — webhook receiver, admin commands
   mcp-url-fetcher/  Custom MCP server — URL allowlist fetcher

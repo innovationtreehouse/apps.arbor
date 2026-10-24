@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { createAuditLogger } from "../index.js";
-import type { AuditStore, NewAuditRecord } from "../index.js";
+import { createAuditLogger } from "../audit-store.js";
+import type { AuditStore, NewAuditRecord } from "../store.js";
 
 const record: NewAuditRecord = {
   channel: "C1",
