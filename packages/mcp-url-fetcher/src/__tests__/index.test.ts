@@ -246,3 +246,62 @@ describe("isPrivateHost", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// redirects
+// ---------------------------------------------------------------------------
+
+describe("url_fetch redirects", () => {
+  const redirect = (location?: string) => ({
+    ok: false,
+    status: 302,
+    statusText: "Found",
+    headers: { get: (h: string) => (h === "location" ? location ?? null : null) },
+  });
+  const page = { ok: true, status: 200, headers: { get: () => "text/plain" }, text: async () => "final page" };
+
+  it("fetches with redirect: manual", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(page);
+    vi.stubGlobal("fetch", fetchMock);
+    await callToolHandler(config, "url_fetch", { url: "https://docs.example.com" });
+    expect(fetchMock.mock.calls[0][1].redirect).toBe("manual");
+  });
+
+  it("refuses a redirect to a URL that is not allowlisted", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(redirect("https://evil.com/steal"));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await callToolHandler(config, "url_fetch", { url: "https://docs.example.com" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("https://evil.com/steal is not on the allowlist");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a 3xx with no Location header", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(redirect()));
+    const result = await callToolHandler(config, "url_fetch", { url: "https://docs.example.com" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("no Location header");
+  });
+
+  it("follows one redirect to an allowlisted URL, resolving a relative Location", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(redirect("/guide")).mockResolvedValueOnce(page);
+    vi.stubGlobal("fetch", fetchMock);
+    vi.mocked(config.isAllowed).mockImplementation((u: string) => u.startsWith("https://docs.example.com"));
+    const result = await callToolHandler(config, "url_fetch", { url: "https://docs.example.com" });
+    expect(fetchMock.mock.calls[1][0]).toBe("https://docs.example.com/guide");
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("final page");
+  });
+
+  it("refuses a second redirect", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(redirect("https://docs.example.com/a"))
+      .mockResolvedValueOnce(redirect("https://docs.example.com/b"));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.mocked(config.isAllowed).mockImplementation((u: string) => u.startsWith("https://docs.example.com"));
+    const result = await callToolHandler(config, "url_fetch", { url: "https://docs.example.com" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Too many redirects");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
