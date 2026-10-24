@@ -160,6 +160,11 @@ describe("runAgent", () => {
     expect(vi.mocked(query).mock.calls[1][0].options?.mcpServers).not.toHaveProperty("gdrive");
   });
 
+  it("stops when the caller's deadline (shared with research) has already passed", async () => {
+    vi.mocked(query).mockImplementation(async function* () { yield { result: "late" }; });
+    await expect(runAgent("prompt", "system", undefined, undefined, [], AbortSignal.abort())).rejects.toThrow("timed out");
+  });
+
   it("offers no GitHub write tools", () => {
     expect(ALLOWED_TOOLS.filter((t) => /^mcp__github__(create|add|update|merge|push|fork)_/.test(t))).toEqual([]);
   });

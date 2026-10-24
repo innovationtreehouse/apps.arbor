@@ -2,9 +2,9 @@ import type { Source } from "../plan.js";
 import { getJson } from "./http.js";
 
 // Statbotics open API: the team's EPA and record for the season.
-export const statbotics: Source = async (plan) => {
+export const statbotics: Source = async (plan, { signal }) => {
   if (!plan.team) return { docs: [] };
-  const data = await getJson<Record<string, unknown>>(`https://api.statbotics.io/v3/team_year/${plan.team}/${plan.year}`);
+  const data = await getJson<Record<string, unknown>>(`https://api.statbotics.io/v3/team_year/${plan.team}/${plan.year}`, {}, signal);
   if (Object.keys(data).length === 0) return { docs: [], note: `no data for team ${plan.team} in ${plan.year}` };
   return {
     docs: [{

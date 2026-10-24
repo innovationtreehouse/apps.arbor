@@ -3,20 +3,25 @@ import type { Source } from "../plan.js";
 import { htmlTitle, htmlToText } from "./http.js";
 
 const WIKI = "https://programs.innovationtreehouse.org/";
-// The wiki scales to zero and answers 503 "wiki is starting" while it boots;
-// 65 s of waits plus up to 15 s per request is roughly the 90 s budget.
+const WAKING = "the wiki was waking (HTTP 503 \"wiki is starting\"); try again in a minute";
+// The wiki scales to zero and answers 503 while it boots. 65 s of waits is the full
+// retry (used by /squirrel-admin check); inside a message the research budget aborts sooner.
 export const WAKE_DELAYS_MS = [5_000, 10_000, 20_000, 30_000];
 
 // ponytail: front page only; add the wiki's own search once its software is known.
-export const programs: Source = async (_plan, { urls }) => {
+export const programs: Source = async (_plan, { urls, signal }) => {
   for (let attempt = 0; ; attempt++) {
-    const res = await fetchAllowed(urls, WIKI);
+    const res = await fetchAllowed(urls, WIKI, signal);
     if (res.status === 503 && attempt < WAKE_DELAYS_MS.length) {
       await res.body?.cancel();
-      await new Promise((resolve) => setTimeout(resolve, WAKE_DELAYS_MS[attempt]));
+      const waited = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(true), WAKE_DELAYS_MS[attempt]);
+        signal?.addEventListener("abort", () => { clearTimeout(timer); resolve(false); }, { once: true });
+      });
+      if (!waited) throw new Error(WAKING);
       continue;
     }
-    if (res.status === 503) throw new Error("the wiki was waking (still HTTP 503 after retrying for over a minute); try again shortly");
+    if (res.status === 503) throw new Error(WAKING);
     if (!res.ok) throw new Error(`HTTP ${res.status} from the programs wiki`);
     const body = await res.text();
     return { docs: [{ source: "programs", url: WIKI, title: htmlTitle(body) ?? "Programs wiki", text: htmlToText(body) }] };

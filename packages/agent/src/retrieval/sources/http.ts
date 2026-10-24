@@ -5,17 +5,21 @@ export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export async function get(url: string, headers: Record<string, string> = {}): Promise<Response> {
+// Requests that carry a key or token do not follow redirects, so the credential
+// never reaches another host; the 3xx then fails as a non-ok response.
+export async function get(url: string, headers: Record<string, string> = {}, signal?: AbortSignal): Promise<Response> {
+  const timeout = AbortSignal.timeout(10_000);
   const res = await fetch(url, {
     headers: { "User-Agent": "Squirrel-Bot/1.0", Accept: "application/json", ...headers },
-    signal: AbortSignal.timeout(10_000),
+    redirect: Object.keys(headers).some((h) => /auth|key|token/i.test(h)) ? "manual" : "follow",
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
   });
   if (!res.ok) throw new Error(`HTTP ${res.status} from ${new URL(url).host}`);
   return res;
 }
 
-export async function getJson<T>(url: string, headers?: Record<string, string>): Promise<T> {
-  return (await get(url, headers)).json() as Promise<T>;
+export async function getJson<T>(url: string, headers?: Record<string, string>, signal?: AbortSignal): Promise<T> {
+  return (await get(url, headers, signal)).json() as Promise<T>;
 }
 
 export function htmlTitle(html: string): string | undefined {

@@ -11,19 +11,25 @@ function positiveIntEnv(name: string, fallback: number): number {
   return n > 0 ? n : fallback;
 }
 
+// Under the 300 s SQS visibility timeout, leaving room for the pre-agent Slack/DB steps.
+export const agentTimeoutS = () => positiveIntEnv("AGENT_TIMEOUT_S", 240);
+
 export async function runAgent(
   prompt: string,
   systemPrompt: string,
   model?: string,
   maxTokens?: number,
   images?: ImageContent[],
+  deadline?: AbortSignal,
 ): Promise<string> {
   const maxRetries = parseInt(process.env.MAX_MCP_RETRIES ?? "2", 10);
-  // Under the 300 s SQS visibility timeout, leaving room for the pre-agent Slack/DB steps.
-  const timeoutS = positiveIntEnv("AGENT_TIMEOUT_S", 240);
+  const timeoutS = agentTimeoutS();
   // One deadline across all attempts, so a hung MCP server cannot stall the SQS loop.
   const abortController = new AbortController();
   const timer = setTimeout(() => abortController.abort(), timeoutS * 1000);
+  // The caller's deadline also covers its research pre-pass, so it can end sooner.
+  deadline?.addEventListener("abort", () => abortController.abort(), { once: true });
+  if (deadline?.aborted) abortController.abort();
   const drive = await driveStatus();
   const options = buildQueryOptions(systemPrompt + DRIVE_NOTE[drive], model, maxTokens, abortController, drive);
   let lastError: Error | undefined;

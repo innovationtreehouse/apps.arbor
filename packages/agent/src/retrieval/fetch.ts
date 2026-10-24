@@ -24,15 +24,20 @@ export const SOURCES: Record<string, { label: string; run: Source }> = {
 export const MAX_DOCS_PER_SOURCE = 4;
 export const MAX_DOCS = 12;
 const DOC_CHARS = 12_000;
-// Long enough for the programs wiki to wake (~90 s); a slower source is reported and skipped.
-export const DEADLINE_MS = 100_000;
+// Sources get this long, then are aborted and reported; condense and decide use the rest
+// of the research budget (answer.ts).
+export const DEADLINE_MS = 25_000;
 
 export interface Card { id: number; source: string; url: string; title: string; extract: string; confidence: number }
 
-function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+// Rejects at the deadline and aborts `controller`, so the source's fetches stop too.
+function withDeadline<T>(work: Promise<T>, ms: number, controller: AbortController): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`timed out after ${ms / 1000}s`)), ms);
+    timer = setTimeout(() => {
+      reject(new Error(`timed out after ${ms / 1000}s`));
+      controller.abort();
+    }, ms);
   });
   return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
 }
@@ -41,9 +46,11 @@ function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
 // key or a down service reaches the model instead of silently shrinking its evidence.
 export async function gather(plan: Plan, deps: Parameters<Source>[1]): Promise<{ docs: Doc[]; status: Record<string, string> }> {
   const status: Record<string, string> = {};
+  const controller = new AbortController();
+  const signal = deps.signal ? AbortSignal.any([deps.signal, controller.signal]) : controller.signal;
   const lists = await Promise.all(plan.sources.map(async (name) => {
     try {
-      const { docs, note } = await withDeadline(SOURCES[name].run(plan, deps), DEADLINE_MS);
+      const { docs, note } = await withDeadline(SOURCES[name].run(plan, { ...deps, signal }), DEADLINE_MS, controller);
       status[name] = `ok, ${docs.length} result${docs.length === 1 ? "" : "s"}${note ? ` (${note})` : ""}`;
       return docs.slice(0, MAX_DOCS_PER_SOURCE);
     } catch (err) {
@@ -69,12 +76,12 @@ Reply with JSON only: {"extract": "300-800 characters quoting or closely paraphr
 
 // Condense each document into an evidence card with the fetch model. A failed call keeps
 // the document's opening text at low confidence rather than dropping it.
-export async function condense(question: string, docs: Doc[], model: string, usage: Usage): Promise<Card[]> {
+export async function condense(question: string, docs: Doc[], model: string, usage: Usage, signal?: AbortSignal): Promise<Card[]> {
   const cards = await Promise.all(docs.map(async (doc, i): Promise<Card> => {
     const base = { id: i + 1, source: doc.source, url: doc.url, title: doc.title };
     if (doc.link) return { ...base, extract: doc.text, confidence: 0.5 };
     try {
-      const out = parseJsonObject(await chat(model, condensePrompt(question, doc), usage));
+      const out = parseJsonObject(await chat(model, condensePrompt(question, doc), usage, signal));
       if (!out) throw new Error("no JSON in reply");
       const confidence = Math.min(1, Math.max(0, Number(out.confidence) || 0));
       return { ...base, extract: String(out.extract ?? "").slice(0, 800), confidence };

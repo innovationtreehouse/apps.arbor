@@ -35,7 +35,7 @@ export interface Usage { calls: number; prompt_tokens: number; completion_tokens
 export const emptyUsage = (): Usage => ({ calls: 0, prompt_tokens: 0, completion_tokens: 0, cost: 0 });
 
 // One OpenRouter chat completion (OpenAI-compatible endpoint) for the research stages.
-export async function chat(model: string, prompt: string, usage: Usage): Promise<string> {
+export async function chat(model: string, prompt: string, usage: Usage, signal?: AbortSignal): Promise<string> {
   const key = process.env.OPENROUTER_API_KEY;
   if (!key) throw new Error("OPENROUTER_API_KEY is required");
   const res = await fetch(`${openRouterBaseUrl()}/v1/chat/completions`, {
@@ -45,10 +45,12 @@ export async function chat(model: string, prompt: string, usage: Usage): Promise
       model,
       messages: [{ role: "user", content: prompt }],
       max_tokens: 1200,
+      // Flash models reason by default; that can spend max_tokens and leave no JSON.
+      reasoning: { effort: "none" },
       response_format: { type: "json_object" },
       usage: { include: true },
     }),
-    signal: AbortSignal.timeout(30_000),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
   });
   if (!res.ok) throw new Error(`OpenRouter HTTP ${res.status} for ${model}`);
   const body = await res.json() as {

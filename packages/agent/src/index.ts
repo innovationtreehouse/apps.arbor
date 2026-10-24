@@ -8,7 +8,7 @@ import type { ConfigStore } from "@arbor/db";
 import { createAuditLogger } from "@arbor/logger";
 import { fetchChannelHistory, fetchThreadHistory, fetchSlackImages, postMessage, postEphemeral } from "./slack.js";
 import type { SlackFile } from "./slack.js";
-import { runAgent } from "./agent.js";
+import { agentTimeoutS, runAgent } from "./agent.js";
 import { buildPrompt, buildSystemPrompt, NO_REPLY_SENTINEL } from "./prompt.js";
 import { BatchBuffer, type BatchEvent } from "./batch-buffer.js";
 import { processAdminCommand, type AdminCommand } from "./admin.js";
@@ -89,9 +89,11 @@ export async function processEvent(event: SlackEvent): Promise<void> {
     ? await fetchChannelHistory(event.channel, THREAD_CHANNEL_CONTEXT).catch(() => [])
     : [];
 
-  // Discretion events may get no reply at all, so they skip the paid research pre-pass.
+  // One AGENT_TIMEOUT_S deadline covers the research pre-pass and the agent together.
+  // Discretion events may get no reply at all, so they skip the paid pre-pass.
+  const deadline = AbortSignal.timeout(agentTimeoutS() * 1000);
   const evidence = event.requires_discretion ? undefined
-    : await research(event.text, { urlStore, fetchModel, decideModel }).catch((err) => {
+    : await research(event.text, { urlStore, fetchModel, decideModel, signal: deadline }).catch((err) => {
       console.error("[research] failed, answering without evidence:", err);
       return undefined;
     });
@@ -110,7 +112,7 @@ export async function processEvent(event: SlackEvent): Promise<void> {
     : [];
 
   const start = Date.now();
-  const response = await runAgent(prompt, systemPrompt, model, maxTokens, images);
+  const response = await runAgent(prompt, systemPrompt, model, maxTokens, images, deadline);
   const duration_ms = Date.now() - start;
 
   if (response.trim() === NO_REPLY_SENTINEL) {

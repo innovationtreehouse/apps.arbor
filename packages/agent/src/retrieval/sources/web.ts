@@ -4,9 +4,9 @@ import { errorMessage, htmlTitle, htmlToText } from "./http.js";
 
 // Allowlisted pages (FIRST sites, docs, links in the question) via the url-fetcher's guard.
 // PDFs (game manuals) are returned as a link card; extraction is out of scope.
-export const web: Source = async (plan, { urls }) => {
+export const web: Source = async (plan, { urls, signal }) => {
   const results = await Promise.allSettled(plan.urls.map(async (url): Promise<Doc> => {
-    const res = await fetchAllowed(urls, url);
+    const res = await fetchAllowed(urls, url, signal);
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
     const type = res.headers.get("content-type") ?? "";
     if (type.includes("pdf")) {

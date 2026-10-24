@@ -78,7 +78,8 @@ describe("chat", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("https://openrouter.ai/api/v1/chat/completions");
     expect(init.headers.Authorization).toBe("Bearer sk-or-x");
-    expect(JSON.parse(init.body)).toMatchObject({ model: "google/x", messages: [{ role: "user", content: "hi" }] });
+    expect(JSON.parse(init.body)).toMatchObject({
+      model: "google/x", messages: [{ role: "user", content: "hi" }], reasoning: { effort: "none" } });
   });
 
   it("throws on HTTP errors and without a key", async () => {

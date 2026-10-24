@@ -54,12 +54,13 @@ export function isPrivateHost(hostname: string): boolean {
   return h.includes(":") && (h === "::1" || h === "::" || /^(f[cd]|fe[89ab])[0-9a-f]*:/.test(h) || h.startsWith("::ffff:"));
 }
 
-async function fetchPublic(url: string): Promise<Response> {
+async function fetchPublic(url: string, signal?: AbortSignal): Promise<Response> {
   if (isPrivateHost(new URL(url).hostname)) throw new Error(`refusing private or local host: ${url}`);
+  const timeout = AbortSignal.timeout(15_000);
   return fetch(url, {
     headers: { "User-Agent": "Squirrel-Bot/1.0" },
     redirect: "manual",
-    signal: AbortSignal.timeout(15_000),
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
   });
 }
 
@@ -67,14 +68,14 @@ const isRedirect = (res: Response) => res.status >= 300 && res.status < 400;
 
 // Allowlisted, public-host fetch that follows one redirect only to another allowlisted URL.
 // Throws on refusal; the caller checks response.ok. Also used by the agent's research step.
-export async function fetchAllowed(config: UrlConfig, url: string): Promise<Response> {
+export async function fetchAllowed(config: UrlConfig, url: string, signal?: AbortSignal): Promise<Response> {
   if (!config.isAllowed(url)) throw new Error(`URL not on allowlist: ${url}`);
-  const response = await fetchPublic(url);
+  const response = await fetchPublic(url, signal);
   if (!isRedirect(response)) return response;
   const location = response.headers.get("location");
   const next = location ? new URL(location, url).href : "(no Location header)";
   if (!config.isAllowed(next)) throw new Error(`Redirect from ${url} to ${next} is not on the allowlist`);
-  const final = await fetchPublic(next);
+  const final = await fetchPublic(next, signal);
   if (isRedirect(final)) throw new Error(`Too many redirects for ${url}`);
   return final;
 }

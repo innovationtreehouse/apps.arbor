@@ -99,6 +99,15 @@ describe("chiefdelphi source", () => {
   });
 });
 
+describe("http get", () => {
+  it("does not follow redirects for keyed requests", async () => {
+    const fetchMock = route({ "thebluealliance": () => new Response("", { status: 301, headers: { location: "https://evil.com/" } }) });
+    process.env.TBA_AUTH_KEY = "k";
+    await expect(tba(plan, allowAll)).rejects.toThrow("HTTP 301");
+    expect(fetchMock.mock.calls[0][1]?.redirect).toBe("manual");
+  });
+});
+
 describe("tba source", () => {
   it("is not configured without TBA_AUTH_KEY", async () => {
     await expect(tba(plan, allowAll)).rejects.toBeInstanceOf(NotConfigured);
@@ -161,6 +170,14 @@ describe("programs source", () => {
     expect(fetchMock).toHaveBeenCalledTimes(WAKE_DELAYS_MS.length + 1);
   });
 
+  it("stops waiting and reports waking when the research budget aborts", async () => {
+    route({ "programs": () => html("wiki is starting", 503) });
+    const controller = new AbortController();
+    const result = programs(plan, { ...allowAll, signal: controller.signal });
+    setTimeout(() => controller.abort(), 10);
+    await expect(result).rejects.toThrow("the wiki was waking");
+  });
+
   it("fails fast on other errors", async () => {
     route({ "programs": () => html("no", 403) });
     await expect(programs(plan, allowAll)).rejects.toThrow("HTTP 403");
@@ -196,7 +213,7 @@ describe("drive source", () => {
       { source: "drive", url: "https://docs.google.com/d1", title: "Handbook", text: "Handbook text" },
       expect.objectContaining({ title: "Budget", link: true }),
     ]);
-    expect(mcp.callTool).toHaveBeenCalledWith({ name: "readDocument", arguments: { documentId: "d1", maxLength: 12_000 } });
+    expect(mcp.callTool).toHaveBeenCalledWith({ name: "readDocument", arguments: { documentId: "d1", maxLength: 12_000 } }, undefined, { signal: undefined });
     expect(mcp.close).toHaveBeenCalled();
   });
 });

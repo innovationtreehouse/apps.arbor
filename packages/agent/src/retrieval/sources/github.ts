@@ -9,21 +9,21 @@ interface Code { path: string; html_url: string; repository: { full_name: string
 interface Repo { full_name: string; html_url: string }
 
 // Issues/PRs, code and the best-matching repo README, scoped to both orgs with org: qualifiers.
-export const github: Source = async (plan) => {
+export const github: Source = async (plan, { signal }) => {
   const token = process.env.GITHUB_TOKEN;
   if (!token) throw new NotConfigured("GITHUB_TOKEN not set");
   const headers = { Authorization: `Bearer ${token}`, Accept: "application/vnd.github.text-match+json" };
   const q = encodeURIComponent(`${plan.terms.slice(0, 3).join(" ")} ${GITHUB_ORGS.map((o) => `org:${o}`).join(" ")}`);
   const [issues, code, repos] = await Promise.all([
-    getJson<{ items: Issue[] }>(`${GH}/search/issues?q=${q}&per_page=2`, headers),
-    getJson<{ items: Code[] }>(`${GH}/search/code?q=${q}&per_page=1`, headers),
-    getJson<{ items: Repo[] }>(`${GH}/search/repositories?q=${q}&per_page=1`, headers),
+    getJson<{ items: Issue[] }>(`${GH}/search/issues?q=${q}&per_page=2`, headers, signal),
+    getJson<{ items: Code[] }>(`${GH}/search/code?q=${q}&per_page=1`, headers, signal),
+    getJson<{ items: Repo[] }>(`${GH}/search/repositories?q=${q}&per_page=1`, headers, signal),
   ]);
   const readmes = await Promise.all(repos.items.map(async (r): Promise<Doc> => ({
     source: "github",
     url: r.html_url,
     title: `${r.full_name} README`,
-    text: await get(`${GH}/repos/${r.full_name}/readme`, { ...headers, Accept: "application/vnd.github.raw" })
+    text: await get(`${GH}/repos/${r.full_name}/readme`, { ...headers, Accept: "application/vnd.github.raw" }, signal)
       .then((res) => res.text(), () => ""),
   })));
   return {

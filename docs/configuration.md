@@ -72,7 +72,7 @@ The model is stored in the `agent_config` PostgreSQL table under the key `model`
 
 ## Research sources
 
-Before each non-discretion reply the agent runs a research pre-pass (`packages/agent/src/retrieval/`): plan search terms and sources, fetch in parallel (at most 4 documents per source, 12 total, 100 s deadline), condense each document with the `model:fetch` model, let the `model:decide` model pick the cards that answer the question, and append the picked cards plus a status line per source to the prompt. The main model cites only those cards. Per-stage token and cost counts go to one `[usage]` log line per message (the audit row has no free field); the main query logs its own `[usage] {"stage":"answer",…}` line.
+Before each non-discretion reply the agent runs a research pre-pass (`packages/agent/src/retrieval/`): plan search terms and sources, fetch in parallel (at most 4 documents per source, 12 total; sources still running after 25 s are aborted and reported), condense each document with the `model:fetch` model, let the `model:decide` model pick the cards that answer the question, and append the picked cards (each fenced in an `<evidence>` block) plus a status line per source to the prompt. The main model cites only those cards. The whole pass has a 45 s budget, after which it continues with whatever cards it has, and it shares one `AGENT_TIMEOUT_S` deadline with the agent query. Per-stage token and cost counts go to one `[usage]` log line per message (the audit row has no free field); the main query logs its own `[usage] {"stage":"answer",…}` line.
 
 | Source | Needs | Notes |
 |---|---|---|
@@ -80,10 +80,12 @@ Before each non-discretion reply the agent runs a research pre-pass (`packages/a
 | Chief Delphi | — | Discourse JSON: `/search.json?q=` then `/t/<id>.json` |
 | The Blue Alliance | `TBA_AUTH_KEY` | Only when the question names a team (`team 9577`, `frc9577`) |
 | Statbotics | — | `api.statbotics.io/v3/team_year/<team>/<year>`, only when a team is named |
-| Programs wiki | allowlist row | HTTP 503 means the scale-to-zero wiki is waking: retried after 5, 10, 20 and 30 s, then reported as waking |
+| Programs wiki | allowlist row | Queried only when the question mentions programs, the wiki, classes, camps, schedules, registration, policies or fees, so ordinary questions do not wake it. HTTP 503 means the scale-to-zero wiki is waking: inside a message it retries until the source deadline, then reports "the wiki was waking"; `check` retries after 5, 10, 20 and 30 s |
 | Google Drive | `GOOGLE_CREDENTIALS` (gdrive proxy) | Offered only while the proxy's `/health` is 200; otherwise the model is told Drive is unavailable |
 | Slack | `SLACK_BOT_TOKEN`, optional `SLACK_USER_TOKEN` | Bot scopes used: `channels:read`, `channels:history`. Search needs the user-token scope `search:read` |
 | GitHub | `GITHUB_TOKEN` | Issues, PRs, code and README search scoped with `org:innovationtreehouse org:frc9577`. The agent's GitHub MCP tools are read-only |
+
+The seed rows come from the Postgres migration `0001_seed_research_allowlist.sql`. SQLite deployments (local dev) get no seed rows; add the hosts with `/squirrel-admin add`.
 
 `/squirrel-admin check` runs every source once and reports pass, fail or not configured. Change the stage models at runtime with `/squirrel-admin model fetch <id>` and `/squirrel-admin model decide <id>`.
 
