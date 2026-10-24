@@ -46,6 +46,10 @@ The agent container also runs the `mcp-url-fetcher` MCP server in-process, which
 | `MAX_MCP_RETRIES` | No | `2` | Number of times to retry a failed `runAgent()` call before giving up; uses exponential backoff starting at 1s |
 | `AGENT_TIMEOUT_S` | No | `240` | Overall deadline in seconds for one `runAgent()` call, retries included; the query is aborted and the event fails when it passes. Keep it below the SQS `VisibilityTimeout` (300) so a slow message is not redelivered |
 | `AGENT_MAX_TURNS` | No | `30` | Maximum agent turns (model responses) per query before the SDK stops it |
+| `ARBOR_MODEL_FETCH` | No | `google/gemini-3.5-flash-lite` | OpenRouter model that condenses each fetched document into an evidence card; overridden by `agent_config` key `model:fetch` |
+| `ARBOR_MODEL_DECIDE` | No | `google/gemini-3.8-flash` | OpenRouter model that picks which evidence cards answer the question; overridden by `agent_config` key `model:decide` |
+| `TBA_AUTH_KEY` | Yes | — | The Blue Alliance API v3 key (`X-TBA-Auth-Key`). Unset: the TBA source reports "not configured" |
+| `SLACK_USER_TOKEN` | Yes | — | Slack user token (`xoxp-…`) with `search:read`, used only for `search.messages` (public-channel results only). Unset: the Slack source scans 14 days of public channels the bot has joined |
 
 ---
 
@@ -63,6 +67,25 @@ The active model (any OpenRouter model ID) can be changed at runtime without red
 ```
 
 The model is stored in the `agent_config` PostgreSQL table under the key `model`. It takes effect on the next message the agent processes — no container restart required. The `MODEL` environment variable serves as the fallback when no value is stored in the database. IDs must be `provider/model`; the command rejects bare IDs and warns when a stored pre-OpenRouter value (e.g. `claude-opus-4-6`) is active. Non-Anthropic models on OpenRouter may handle the MCP tool schema less reliably.
+
+---
+
+## Research sources
+
+Before each non-discretion reply the agent runs a research pre-pass (`packages/agent/src/retrieval/`): plan search terms and sources, fetch in parallel (at most 4 documents per source, 12 total, 100 s deadline), condense each document with the `model:fetch` model, let the `model:decide` model pick the cards that answer the question, and append the picked cards plus a status line per source to the prompt. The main model cites only those cards. Per-stage token and cost counts go to one `[usage]` log line per message (the audit row has no free field); the main query logs its own `[usage] {"stage":"answer",…}` line.
+
+| Source | Needs | Notes |
+|---|---|---|
+| FIRST and allowlisted sites | allowlist rows (seeded by migration `0001`) | Fetched through the url-fetcher guard (origin + path-prefix match, private hosts refused, one allowlisted redirect). PDFs such as the game manual are returned as a link, not extracted |
+| Chief Delphi | — | Discourse JSON: `/search.json?q=` then `/t/<id>.json` |
+| The Blue Alliance | `TBA_AUTH_KEY` | Only when the question names a team (`team 9577`, `frc9577`) |
+| Statbotics | — | `api.statbotics.io/v3/team_year/<team>/<year>`, only when a team is named |
+| Programs wiki | allowlist row | HTTP 503 means the scale-to-zero wiki is waking: retried after 5, 10, 20 and 30 s, then reported as waking |
+| Google Drive | `GOOGLE_CREDENTIALS` (gdrive proxy) | Offered only while the proxy's `/health` is 200; otherwise the model is told Drive is unavailable |
+| Slack | `SLACK_BOT_TOKEN`, optional `SLACK_USER_TOKEN` | Bot scopes used: `channels:read`, `channels:history`. Search needs the user-token scope `search:read` |
+| GitHub | `GITHUB_TOKEN` | Issues, PRs, code and README search scoped with `org:innovationtreehouse org:frc9577`. The agent's GitHub MCP tools are read-only |
+
+`/squirrel-admin check` runs every source once and reports pass, fail or not configured. Change the stage models at runtime with `/squirrel-admin model fetch <id>` and `/squirrel-admin model decide <id>`.
 
 ---
 
