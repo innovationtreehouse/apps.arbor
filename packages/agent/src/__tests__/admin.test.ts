@@ -449,6 +449,8 @@ describe("check", () => {
     expect(text).toContain("GitHub");
     expect(text).toContain("jeff");
     expect(text).toContain("3 URLs");
+    expect(text).toContain("✅ *OpenRouter*: key configured via");
+    expect(text).not.toContain("sk-or-");
   });
 
   it("reports DB error in URL fetcher check", async () => {

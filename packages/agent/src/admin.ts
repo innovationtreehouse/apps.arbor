@@ -218,7 +218,7 @@ function checkOpenRouter(): string {
   if (!openRouterKey.startsWith("sk-or-")) {
     return `⚠️ *OpenRouter*: key set but format looks unexpected (\`${baseUrl}\`)`;
   }
-  return `✅ *OpenRouter*: key configured (\`${openRouterKey.slice(0, 12)}…\`) via \`${baseUrl}\``;
+  return `✅ *OpenRouter*: key configured via \`${baseUrl}\``;
 }
 
 async function checkUrlFetcher(urlStore: UrlStore): Promise<string> {
