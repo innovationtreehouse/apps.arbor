@@ -344,3 +344,21 @@ describe("processEvent", () => {
     );
   });
 });
+
+describe("config fallback", () => {
+  it("logs failed config reads and still runs the agent with defaults", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(mockConfigStore.get).mockImplementation(async (key: string) => {
+      if (key === "model") throw new Error("db down");
+      if (key === "token_limit:default") return "4096";
+      return undefined;
+    });
+
+    await processEvent(baseEvent);
+
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    expect(errSpy.mock.calls[0][0]).toContain("model: Error: db down");
+    expect(runAgent).toHaveBeenCalledWith("built prompt", "system prompt", undefined, 4096, []);
+    errSpy.mockRestore();
+  });
+});
