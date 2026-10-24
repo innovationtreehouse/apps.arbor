@@ -1,16 +1,16 @@
 import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
+import type postgres from "postgres";
 import { desc, eq, and } from "drizzle-orm";
 import { auditLog } from "./schema.js";
+import { pgClient } from "./postgres-store.js";
 import type { AuditStore, AuditRecord, NewAuditRecord } from "./store.js";
 
 /* v8 ignore start */
 export class PostgresAuditStore implements AuditStore {
   private db: ReturnType<typeof drizzle>;
 
-  constructor(connectionString: string) {
-    const client = postgres(connectionString);
-    this.db = drizzle(client, { schema: { auditLog } });
+  constructor(conn: string | postgres.Sql) {
+    this.db = drizzle(pgClient(conn), { schema: { auditLog } });
   }
 
   async write(record: NewAuditRecord): Promise<void> {

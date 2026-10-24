@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createStores } from "../create-stores.js";
 import type { StoreSet } from "../create-stores.js";
+import postgres from "postgres";
+
+// Wrap the real (lazy, non-connecting) postgres() so tests can count clients.
+vi.mock("postgres", async (importOriginal) => {
+  const real = (await importOriginal<typeof import("postgres")>()).default;
+  return { default: vi.fn(real) };
+});
 
 // Use an in-memory SQLite database for each test run
 let stores: StoreSet;
@@ -173,5 +180,11 @@ describe("createStores", () => {
     // Different constructor names confirm different implementations
     expect(sqlite.urlStore.constructor.name).toBe("SqliteUrlStore");
     expect(pg.urlStore.constructor.name).toBe("PostgresUrlStore");
+  });
+
+  it("opens one shared postgres client for all three stores", () => {
+    vi.mocked(postgres).mockClear();
+    createStores("postgres://localhost/test");
+    expect(postgres).toHaveBeenCalledTimes(1);
   });
 });
