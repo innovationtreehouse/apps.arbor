@@ -63,6 +63,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return { statusCode: 401, body: "Invalid signature" };
   }
 
+  // Slack retries anything not acked within 3s; the first attempt is already
+  // being handled, so ack retries without enqueueing a duplicate.
+  const retryNum = Object.entries(event.headers).find(([k]) => k.toLowerCase() === "x-slack-retry-num")?.[1];
+  if (Number(retryNum) > 0) {
+    console.log(`dropping Slack retry ${retryNum} for ${event.rawPath}`);
+    return { statusCode: 200, body: "" };
+  }
+
   const path = event.rawPath;
 
   if (path === "/slack/events") {

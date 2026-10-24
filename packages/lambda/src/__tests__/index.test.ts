@@ -79,6 +79,7 @@ function makeEvent(options: {
   body?: string;
   timestamp?: string;
   signature?: string;
+  headers?: Record<string, string>;
 }) {
   const body = options.body ?? "";
   const timestamp = options.timestamp ?? ts();
@@ -89,6 +90,7 @@ function makeEvent(options: {
     headers: {
       "x-slack-request-timestamp": timestamp,
       "x-slack-signature": sig,
+      ...options.headers,
     },
   } as any;
 }
@@ -358,6 +360,31 @@ describe("/slack/events", () => {
 
     const sent = JSON.parse(sqsMock.calls()[0].args[0].input.MessageBody!);
     expect(sent.thread_ts).toBe("9.9");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Slack retry dedupe
+// ---------------------------------------------------------------------------
+
+describe("Slack retries", () => {
+  const body = JSON.stringify({ type: "event_callback", event: { type: "app_mention", channel: "C1", ts: "1.0", text: "hi", user: "U1" } });
+
+  beforeEach(() => {
+    ecsMock.on(ListTasksCommand).resolves({ taskArns: ["arn:task:1"] });
+    sqsMock.on(SendMessageCommand).resolves({});
+  });
+
+  it.each(["x-slack-retry-num", "X-Slack-Retry-Num"])("acks a retry (%s: 1) with 200 and does not enqueue", async (name) => {
+    const res = await handler(makeEvent({ body, headers: { [name]: "1" } }), {} as any, {} as any);
+    expect(res?.statusCode).toBe(200);
+    expect(sqsMock.calls()).toHaveLength(0);
+    expect(ecsMock.calls()).toHaveLength(0);
+  });
+
+  it("processes a request whose retry number is 0", async () => {
+    await handler(makeEvent({ body, headers: { "x-slack-retry-num": "0" } }), {} as any, {} as any);
+    expect(sqsMock.calls()).toHaveLength(1);
   });
 });
 
