@@ -2,7 +2,7 @@ import type { UrlStore, ConfigStore, AuditStore } from "@arbor/db";
 import { buildSystemPrompt, defaultSystemPrompt, DEFAULT_USER_PROMPT_TEMPLATE } from "./prompt.js";
 import { DEFAULT_MODEL, openRouterBaseUrl } from "./provider.js";
 
-interface AdminCommand {
+export interface AdminCommand {
   type: "admin_command";
   subcommand: string;
   args: string[];

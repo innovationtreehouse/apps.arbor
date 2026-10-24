@@ -11,7 +11,7 @@ import type { SlackFile } from "./slack.js";
 import { runAgent } from "./agent.js";
 import { buildPrompt, buildSystemPrompt, NO_REPLY_SENTINEL } from "./prompt.js";
 import { BatchBuffer, type BatchEvent } from "./batch-buffer.js";
-import { processAdminCommand } from "./admin.js";
+import { processAdminCommand, type AdminCommand } from "./admin.js";
 import { providerEnv } from "./provider.js";
 
 export type SlackEvent = BatchEvent & {
@@ -37,6 +37,17 @@ const SQS_WAIT_SECONDS = 20;
 
 // Number of channel messages to include as compacted context in thread replies
 const THREAD_CHANNEL_CONTEXT = 4;
+
+export function isAdminCommand(m: unknown): m is AdminCommand {
+  const c = m as AdminCommand;
+  return c?.type === "admin_command" && typeof c.subcommand === "string" && Array.isArray(c.args)
+    && typeof c.userId === "string" && typeof c.responseUrl === "string";
+}
+
+export function isSlackEvent(m: unknown): m is SlackEvent {
+  const e = m as SlackEvent;
+  return typeof e?.channel === "string" && typeof e.thread_ts === "string" && typeof e.user === "string";
+}
 
 // A failed config read falls back to defaults so the user still gets a reply.
 async function resolveConfig(store: ConfigStore, channel: string) {
@@ -144,16 +155,17 @@ async function main(): Promise<void> {
     const sqsMessage = result.Messages[0];
 
     try {
-      const parsed = JSON.parse(sqsMessage.Body!);
-      if (parsed.type === "admin_command") {
+      const parsed: unknown = JSON.parse(sqsMessage.Body ?? "");
+      if (isAdminCommand(parsed)) {
         await processAdminCommand(parsed, { urlStore, configStore, auditStore });
-      } else {
-        const event: SlackEvent = parsed;
-        if (event.holdoff) {
-          batchBuffer.add(event);
+      } else if (isSlackEvent(parsed)) {
+        if (parsed.holdoff) {
+          batchBuffer.add(parsed);
         } else {
-          await processEvent(event);
+          await processEvent(parsed);
         }
+      } else {
+        console.error(`[agent] dropping malformed SQS message ${sqsMessage.MessageId}`);
       }
     } catch (err) {
       console.error("Failed to process event:", err);
