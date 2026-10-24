@@ -7,6 +7,8 @@ import {
 import { PostgresUrlStore } from "@arbor/db";
 import { UrlConfig } from "./config.js";
 
+export { UrlConfig };
+
 const MAX_CONTENT_CHARS = 20_000;
 const AGENT_NAME = process.env.AGENT_NAME ?? "Squirrel";
 
@@ -63,6 +65,20 @@ async function fetchPublic(url: string): Promise<Response> {
 
 const isRedirect = (res: Response) => res.status >= 300 && res.status < 400;
 
+// Allowlisted, public-host fetch that follows one redirect only to another allowlisted URL.
+// Throws on refusal; the caller checks response.ok. Also used by the agent's research step.
+export async function fetchAllowed(config: UrlConfig, url: string): Promise<Response> {
+  if (!config.isAllowed(url)) throw new Error(`URL not on allowlist: ${url}`);
+  const response = await fetchPublic(url);
+  if (!isRedirect(response)) return response;
+  const location = response.headers.get("location");
+  const next = location ? new URL(location, url).href : "(no Location header)";
+  if (!config.isAllowed(next)) throw new Error(`Redirect from ${url} to ${next} is not on the allowlist`);
+  const final = await fetchPublic(next);
+  if (isRedirect(final)) throw new Error(`Too many redirects for ${url}`);
+  return final;
+}
+
 const ok = (text: string) => ({ content: [{ type: "text", text }] });
 const err = (text: string) => ({ isError: true, content: [{ type: "text", text }] });
 
@@ -86,15 +102,7 @@ export async function callToolHandler(
     }
 
     try {
-      let response = await fetchPublic(url);
-      // Follow one redirect, and only to another allowlisted URL.
-      if (isRedirect(response)) {
-        const location = response.headers.get("location");
-        const next = location ? new URL(location, url).href : "(no Location header)";
-        if (!config.isAllowed(next)) return err(`Redirect from ${url} to ${next} is not on the allowlist`);
-        response = await fetchPublic(next);
-        if (isRedirect(response)) return err(`Too many redirects for ${url}`);
-      }
+      const response = await fetchAllowed(config, url);
       if (!response.ok) return err(`HTTP ${response.status} ${response.statusText} for ${url}`);
 
       const contentType = response.headers.get("content-type") ?? "";

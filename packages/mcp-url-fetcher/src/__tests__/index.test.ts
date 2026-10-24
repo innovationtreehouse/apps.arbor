@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { callToolHandler, isPrivateHost, listToolsHandler } from "../index.js";
+import { callToolHandler, fetchAllowed, isPrivateHost, listToolsHandler } from "../index.js";
 import { UrlConfig } from "../config.js";
 
 // Mock UrlConfig so we control allowlist contents without DynamoDB
@@ -237,7 +237,7 @@ describe("isPrivateHost", () => {
   it("url_fetch refuses an allowlisted URL on a private host without fetching", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    vi.mocked(config.isAllowed).mockReturnValueOnce(true);
+    vi.mocked(config.isAllowed).mockReturnValue(true);
 
     const result = await callToolHandler(config, "url_fetch", { url: "https://169.254.169.254/latest/meta-data" });
 
@@ -303,5 +303,20 @@ describe("url_fetch redirects", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("Too many redirects");
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("fetchAllowed", () => {
+  it("refuses a URL that is not allowlisted without fetching", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(fetchAllowed(config, "https://evil.com/")).rejects.toThrow("not on allowlist");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns the response for an allowlisted URL, including non-ok statuses", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("down", { status: 503 })));
+    const res = await fetchAllowed(config, "https://docs.example.com");
+    expect(res.status).toBe(503);
   });
 });
