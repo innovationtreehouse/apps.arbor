@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../slack.js", () => ({
+vi.mock("../slack.js", async (importActual) => ({
+  ...(await importActual<typeof import("../slack.js")>()),
   fetchThreadHistory: vi.fn().mockResolvedValue([]),
   postMessage: vi.fn().mockResolvedValue(undefined),
   postEphemeral: vi.fn().mockResolvedValue(undefined),
