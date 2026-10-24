@@ -23,6 +23,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Build and type-check
+        run: npm run build
+
       - name: Run tests with coverage
         run: npm run test:coverage
 
@@ -57,11 +60,9 @@ jobs:
         run: npm ci
 
       - name: Run SQLite developer-flow tests
-        # Runs vitest with a path filter of packages/db, scoped further by
-        # vitest.integration.config.ts which already limits to *.integration.test.ts.
-        # Result: only packages/db SQLite integration tests run — no unit tests,
-        # no other packages.
-        run: npm run test:dev
+        # Only the file-backed SQLite *.integration.test.ts files in packages/db;
+        # unit excludes them and integration skips them under Postgres.
+        run: npx vitest run --config vitest.integration.config.ts packages/db
 
   integration:
     name: test / integration
@@ -105,8 +106,8 @@ jobs:
       - name: Run database migrations
         run: cd packages/db && npm run db:migrate
 
-      - name: Build packages
-        run: npm run build
+      - name: Build MCP url-fetcher (spawned from dist by the agent)
+        run: npx tsc --build packages/mcp-url-fetcher
 
       - name: Run integration tests
         run: npm run test:integration
