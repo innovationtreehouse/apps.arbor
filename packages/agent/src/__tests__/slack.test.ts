@@ -17,10 +17,10 @@ vi.mock("@slack/web-api", () => ({
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
+process.env.SLACK_BOT_TOKEN = "xoxb-test-token";
+
 // Import after mocking
 const { fetchThreadHistory, postMessage, fetchSlackImages } = await import("../slack.js");
-
-process.env.SLACK_BOT_TOKEN = "xoxb-test-token";
 
 beforeEach(() => {
   mockPostMessage.mockClear();

@@ -1,7 +1,8 @@
 import { WebClient } from "@slack/web-api";
 import type { SlackMessage } from "./prompt.js";
 
-const client = new WebClient(process.env.SLACK_BOT_TOKEN);
+const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
+const client = new WebClient(SLACK_BOT_TOKEN);
 
 // Slack rejects messages over 4000 chars; replies are cut to this length.
 export const SLACK_MAX_CHARS = 3900;
@@ -99,15 +100,14 @@ const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 export async function fetchSlackImages(
   files: SlackFile[]
 ): Promise<ImageContent[]> {
-  const token = process.env.SLACK_BOT_TOKEN;
-  if (!token) return [];
+  if (!SLACK_BOT_TOKEN) return [];
 
   const results: ImageContent[] = [];
   for (const file of files) {
     if (!SUPPORTED_IMAGE_TYPES.has(file.mimetype)) continue;
     try {
       const res = await fetch(file.url_private, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
         signal: AbortSignal.timeout(15_000),
       });
       if (!res.ok) {
