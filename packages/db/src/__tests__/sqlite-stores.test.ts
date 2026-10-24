@@ -1,6 +1,13 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createStores } from "../create-stores.js";
 import type { StoreSet } from "../create-stores.js";
+import postgres from "postgres";
+
+// Wrap the real (lazy, non-connecting) postgres() so tests can count clients.
+vi.mock("postgres", async (importOriginal) => {
+  const real = (await importOriginal<typeof import("postgres")>()).default;
+  return { default: vi.fn(real) };
+});
 
 // Use an in-memory SQLite database for each test run
 let stores: StoreSet;
@@ -136,6 +143,18 @@ describe("SqliteAuditStore", () => {
     expect(rows[0].thread_ts).toBe("1.0");
     expect(rows[0].channel).toBe("C1");
   });
+
+  it("breaks created_at ties by id, newest first", async () => {
+    vi.useFakeTimers({ now: new Date("2026-01-01T00:00:00Z"), toFake: ["Date"] });
+    try {
+      await stores.auditStore.write({ ...record, prompt: "first" });
+      await stores.auditStore.write({ ...record, prompt: "second" });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect((await stores.auditStore.listRecent(10)).map((r) => r.prompt)).toEqual(["second", "first"]);
+    expect((await stores.auditStore.listByThread("C1", "1.0")).map((r) => r.prompt)).toEqual(["second", "first"]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -161,5 +180,11 @@ describe("createStores", () => {
     // Different constructor names confirm different implementations
     expect(sqlite.urlStore.constructor.name).toBe("SqliteUrlStore");
     expect(pg.urlStore.constructor.name).toBe("PostgresUrlStore");
+  });
+
+  it("opens one shared postgres client for all three stores", () => {
+    vi.mocked(postgres).mockClear();
+    createStores("postgres://localhost/test");
+    expect(postgres).toHaveBeenCalledTimes(1);
   });
 });

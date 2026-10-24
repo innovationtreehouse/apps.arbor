@@ -1,3 +1,4 @@
+import postgres from "postgres";
 import { PostgresUrlStore } from "./postgres-store.js";
 import { PostgresConfigStore } from "./config-store.js";
 import { PostgresAuditStore } from "./audit-store.js";
@@ -15,10 +16,11 @@ export function createStores(connectionString: string): StoreSet {
     connectionString.startsWith("postgres://") ||
     connectionString.startsWith("postgresql://")
   ) {
+    const client = postgres(connectionString);
     return {
-      urlStore: new PostgresUrlStore(connectionString),
-      configStore: new PostgresConfigStore(connectionString),
-      auditStore: new PostgresAuditStore(connectionString),
+      urlStore: new PostgresUrlStore(client),
+      configStore: new PostgresConfigStore(client),
+      auditStore: new PostgresAuditStore(client),
     };
   }
   const filePath = connectionString.replace(/^file:/, "");

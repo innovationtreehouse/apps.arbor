@@ -4,12 +4,16 @@ import { eq, count } from "drizzle-orm";
 import { urlConfig } from "./schema.js";
 import type { UrlStore, UrlEntry, NewUrlEntry } from "./store.js";
 
+/** Accepts a URL or an existing client so createStores can share one pool. */
+export function pgClient(conn: string | postgres.Sql): postgres.Sql {
+  return typeof conn === "string" ? postgres(conn) : conn;
+}
+
 export class PostgresUrlStore implements UrlStore {
   private db: ReturnType<typeof drizzle>;
 
-  constructor(connectionString: string) {
-    const client = postgres(connectionString);
-    this.db = drizzle(client, { schema: { urlConfig } });
+  constructor(conn: string | postgres.Sql) {
+    this.db = drizzle(pgClient(conn), { schema: { urlConfig } });
   }
 
   async listEnabled(): Promise<UrlEntry[]> {

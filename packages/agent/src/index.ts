@@ -3,8 +3,7 @@ import {
   ReceiveMessageCommand,
   DeleteMessageCommand,
 } from "@aws-sdk/client-sqs";
-import { PostgresConfigStore, PostgresAuditStore, PostgresUrlStore } from "@arbor/db";
-import { createAuditLogger } from "@arbor/logger";
+import { PostgresConfigStore, PostgresAuditStore, PostgresUrlStore, createAuditLogger } from "@arbor/db";
 import { fetchChannelHistory, fetchThreadHistory, fetchSlackImages, postMessage, postEphemeral } from "./slack.js";
 import type { SlackFile } from "./slack.js";
 import { runAgent } from "./agent.js";

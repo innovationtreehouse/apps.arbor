@@ -8,13 +8,15 @@ import {
 import type { ConfigStore } from "@arbor/db";
 
 // ---------------------------------------------------------------------------
-// Mock @arbor/db and @arbor/logger before importing the module under test
+// Mock @arbor/db before importing the module under test
 // ---------------------------------------------------------------------------
 
 const mockConfigStore: ConfigStore = {
   get: vi.fn().mockResolvedValue(undefined),
   set: vi.fn().mockResolvedValue(undefined),
 };
+
+const mockAuditLog = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("@arbor/db", () => ({
   PostgresConfigStore: vi.fn().mockImplementation(function () {
@@ -26,15 +28,11 @@ vi.mock("@arbor/db", () => ({
   PostgresUrlStore: vi.fn().mockImplementation(function () {
     return {};
   }),
+  createAuditLogger: vi.fn().mockReturnValue({ log: mockAuditLog }),
 }));
 
 vi.mock("../admin.js", () => ({
   processAdminCommand: vi.fn().mockResolvedValue(undefined),
-}));
-
-const mockAuditLog = vi.fn().mockResolvedValue(undefined);
-vi.mock("@arbor/logger", () => ({
-  createAuditLogger: vi.fn().mockReturnValue({ log: mockAuditLog }),
 }));
 
 vi.mock("../slack.js", () => ({

@@ -33,23 +33,17 @@ const mockAuditStore: AuditStore = {
 };
 
 vi.mock("@arbor/db", () => ({
-  PostgresUrlStore: vi.fn().mockImplementation(function () {
-    return mockStore;
-  }),
-  PostgresConfigStore: vi.fn().mockImplementation(function () {
-    return mockConfigStore;
-  }),
-  PostgresAuditStore: vi.fn().mockImplementation(function () {
-    return mockAuditStore;
-  }),
+  createStores: vi.fn(() => ({
+    urlStore: mockStore,
+    configStore: mockConfigStore,
+    auditStore: mockAuditStore,
+  })),
 }));
 
-// Mock ChannelRateLimiter so tests control holdoff behaviour
+// Mock the rate limiter so tests control holdoff behaviour
 const mockRecordAndCheck = vi.fn().mockResolvedValue(false);
 vi.mock("../rate-limiter.js", () => ({
-  ChannelRateLimiter: vi.fn().mockImplementation(function () {
-    return { recordAndCheck: mockRecordAndCheck };
-  }),
+  recordAndCheck: mockRecordAndCheck,
 }));
 
 const { handler } = await import("../index.js");
@@ -85,6 +79,7 @@ function makeEvent(options: {
   body?: string;
   timestamp?: string;
   signature?: string;
+  headers?: Record<string, string>;
 }) {
   const body = options.body ?? "";
   const timestamp = options.timestamp ?? ts();
@@ -95,6 +90,7 @@ function makeEvent(options: {
     headers: {
       "x-slack-request-timestamp": timestamp,
       "x-slack-signature": sig,
+      ...options.headers,
     },
   } as any;
 }
@@ -175,6 +171,12 @@ describe("/slack/events", () => {
     const res = await handler(makeEvent({ body }), {} as any, {} as any);
     expect(res?.statusCode).toBe(200);
     expect(JSON.parse(res?.body ?? "")).toEqual({ challenge: "abc123" });
+  });
+
+  it("returns 400 for a malformed JSON body without enqueueing", async () => {
+    const res = await handler(makeEvent({ body: "{not json" }), {} as any, {} as any);
+    expect(res?.statusCode).toBe(400);
+    expect(sqsMock.calls()).toHaveLength(0);
   });
 
   it("ignores non-message event types", async () => {
@@ -368,6 +370,31 @@ describe("/slack/events", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Slack retry dedupe
+// ---------------------------------------------------------------------------
+
+describe("Slack retries", () => {
+  const body = JSON.stringify({ type: "event_callback", event: { type: "app_mention", channel: "C1", ts: "1.0", text: "hi", user: "U1" } });
+
+  beforeEach(() => {
+    ecsMock.on(ListTasksCommand).resolves({ taskArns: ["arn:task:1"] });
+    sqsMock.on(SendMessageCommand).resolves({});
+  });
+
+  it.each(["x-slack-retry-num", "X-Slack-Retry-Num"])("acks a retry (%s: 1) with 200 and does not enqueue", async (name) => {
+    const res = await handler(makeEvent({ body, headers: { [name]: "1" } }), {} as any, {} as any);
+    expect(res?.statusCode).toBe(200);
+    expect(sqsMock.calls()).toHaveLength(0);
+    expect(ecsMock.calls()).toHaveLength(0);
+  });
+
+  it("processes a request whose retry number is 0", async () => {
+    await handler(makeEvent({ body, headers: { "x-slack-retry-num": "0" } }), {} as any, {} as any);
+    expect(sqsMock.calls()).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // /slack/commands — admin handler
 // ---------------------------------------------------------------------------
 
@@ -523,6 +550,6 @@ describe("rate limiting", () => {
 
   it("calls recordAndCheck with the correct channel", async () => {
     await handler(makeEvent({ body: mentionBody("C_SPECIAL") }), {} as any, {} as any);
-    expect(mockRecordAndCheck).toHaveBeenCalledWith("C_SPECIAL");
+    expect(mockRecordAndCheck).toHaveBeenCalledWith(mockConfigStore, "C_SPECIAL");
   });
 });

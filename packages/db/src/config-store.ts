@@ -1,15 +1,15 @@
 import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
+import type postgres from "postgres";
 import { eq } from "drizzle-orm";
 import { agentConfig } from "./schema.js";
+import { pgClient } from "./postgres-store.js";
 import type { ConfigStore } from "./store.js";
 
 export class PostgresConfigStore implements ConfigStore {
   private db: ReturnType<typeof drizzle>;
 
-  constructor(connectionString: string) {
-    const client = postgres(connectionString);
-    this.db = drizzle(client, { schema: { agentConfig } });
+  constructor(conn: string | postgres.Sql) {
+    this.db = drizzle(pgClient(conn), { schema: { agentConfig } });
   }
 
   async get(key: string): Promise<string | undefined> {

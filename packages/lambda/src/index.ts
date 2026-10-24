@@ -6,13 +6,12 @@ import {
   RunTaskCommand,
 } from "@aws-sdk/client-ecs";
 import type { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ChannelRateLimiter } from "./rate-limiter.js";
-import { PostgresConfigStore } from "@arbor/db";
+import { recordAndCheck } from "./rate-limiter.js";
+import { createStores } from "@arbor/db";
 
 const sqsClient = new SQSClient({});
 const ecsClient = new ECSClient({});
-const configStore = new PostgresConfigStore(process.env.DATABASE_URL!);
-const rateLimiter = new ChannelRateLimiter(configStore);
+const { configStore } = createStores(process.env.DATABASE_URL!);
 const AGENT_NAME = process.env.AGENT_NAME ?? "Squirrel";
 declare const __GIT_SHA__: string | undefined;
 declare const __BUILD_TIME__: string | undefined;
@@ -64,6 +63,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return { statusCode: 401, body: "Invalid signature" };
   }
 
+  // Slack retries anything not acked within 3s; the first attempt is already
+  // being handled, so ack retries without enqueueing a duplicate.
+  const retryNum = Object.entries(event.headers).find(([k]) => k.toLowerCase() === "x-slack-retry-num")?.[1];
+  if (Number(retryNum) > 0) {
+    console.log(`dropping Slack retry ${retryNum} for ${event.rawPath}`);
+    return { statusCode: 200, body: "" };
+  }
+
   const path = event.rawPath;
 
   if (path === "/slack/events") {
@@ -81,7 +88,13 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 // ---------------------------------------------------------------------------
 
 async function handleEvent(rawBody: string) {
-  const body = JSON.parse(rawBody);
+  let body;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    console.warn("dropping /slack/events request with a malformed JSON body");
+    return { statusCode: 400, body: "Bad request" };
+  }
   const ev = body.event;
   console.log("event type:", body.type, "event subtype:", ev?.type, "channel_type:", ev?.channel_type, "bot_id:", ev?.bot_id);
 
@@ -149,7 +162,7 @@ async function handleEvent(rawBody: string) {
   });
 
   const channel = ev.channel as string;
-  const holdoff = await rateLimiter.recordAndCheck(channel);
+  const holdoff = await recordAndCheck(configStore, channel);
 
   // is_mention: agent must always reply, no discretion
   // requires_discretion: agent applies judgment about whether to reply

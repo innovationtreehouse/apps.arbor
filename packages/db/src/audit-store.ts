@@ -1,16 +1,16 @@
 import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
+import type postgres from "postgres";
 import { desc, eq, and } from "drizzle-orm";
 import { auditLog } from "./schema.js";
+import { pgClient } from "./postgres-store.js";
 import type { AuditStore, AuditRecord, NewAuditRecord } from "./store.js";
 
 /* v8 ignore start */
 export class PostgresAuditStore implements AuditStore {
   private db: ReturnType<typeof drizzle>;
 
-  constructor(connectionString: string) {
-    const client = postgres(connectionString);
-    this.db = drizzle(client, { schema: { auditLog } });
+  constructor(conn: string | postgres.Sql) {
+    this.db = drizzle(pgClient(conn), { schema: { auditLog } });
   }
 
   async write(record: NewAuditRecord): Promise<void> {
@@ -29,7 +29,7 @@ export class PostgresAuditStore implements AuditStore {
     const rows = await this.db
       .select()
       .from(auditLog)
-      .orderBy(desc(auditLog.created_at))
+      .orderBy(desc(auditLog.created_at), desc(auditLog.id))
       .limit(limit);
     return rows.map(toRecord);
   }
@@ -39,7 +39,7 @@ export class PostgresAuditStore implements AuditStore {
       .select()
       .from(auditLog)
       .where(and(eq(auditLog.channel, channel), eq(auditLog.thread_ts, thread_ts)))
-      .orderBy(desc(auditLog.created_at));
+      .orderBy(desc(auditLog.created_at), desc(auditLog.id));
     return rows.map(toRecord);
   }
 }
@@ -58,3 +58,18 @@ function toRecord(row: typeof auditLog.$inferSelect): AuditRecord {
   };
 }
 /* v8 ignore stop */
+
+export interface AuditLogger {
+  log(record: NewAuditRecord): Promise<void>;
+}
+
+/** Wraps an AuditStore so a failed audit write never fails the reply. */
+export function createAuditLogger(store: AuditStore): AuditLogger {
+  return {
+    async log(record: NewAuditRecord): Promise<void> {
+      await store.write(record).catch((err) => {
+        console.error("[audit] write failed:", err);
+      });
+    },
+  };
+}
