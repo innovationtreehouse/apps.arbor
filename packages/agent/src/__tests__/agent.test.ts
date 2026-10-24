@@ -6,7 +6,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 }));
 
 const { query } = await import("@anthropic-ai/claude-agent-sdk");
-const { runAgent } = await import("../agent.js");
+const { runAgent, ALLOWED_TOOLS } = await import("../agent.js");
 
 
 process.env.AWS_REGION = "us-east-1";
@@ -292,5 +292,11 @@ describe("runAgent", () => {
     const { mcpServers } = vi.mocked(query).mock.calls[0][0].options ?? {};
     expect((mcpServers as any)?.urlFetcher?.env?.DATABASE_URL).toBe("postgres://localhost/test");
     expect((mcpServers as any)?.urlFetcher?.env).not.toHaveProperty("DYNAMODB_TABLE");
+  });
+
+  it("passes the tool allowlist as data", async () => {
+    vi.mocked(query).mockReturnValue((async function* () { yield { result: "ok" }; })());
+    await runAgent("prompt", "system");
+    expect(vi.mocked(query).mock.calls[0][0].options?.allowedTools).toEqual(ALLOWED_TOOLS);
   });
 });

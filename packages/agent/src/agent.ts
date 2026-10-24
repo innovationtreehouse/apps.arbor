@@ -1,4 +1,4 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { query, type Options } from "@anthropic-ai/claude-agent-sdk";
 import * as path from "path";
 import { randomUUID } from "crypto";
 import type { ImageContent } from "./slack.js";
@@ -12,6 +12,7 @@ export async function runAgent(
   images?: ImageContent[],
 ): Promise<string> {
   const maxRetries = parseInt(process.env.MAX_MCP_RETRIES ?? "2", 10);
+  const options = buildQueryOptions(systemPrompt, model, maxTokens);
   let lastError: Error | undefined;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -25,7 +26,7 @@ export async function runAgent(
     }
 
     try {
-      return await runAgentOnce(prompt, systemPrompt, model, maxTokens, images);
+      return await runAgentOnce(prompt, options, images);
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
       if (!isTransientError(lastError)) throw lastError;
@@ -77,103 +78,95 @@ async function* buildImagePrompt(
   };
 }
 
+// Plain data so new MCP servers and tools can be added without touching the query loop.
+export const ALLOWED_TOOLS = [
+  // URL fetcher — read allowed URLs
+  "mcp__urlFetcher__url_fetch",
+  "mcp__urlFetcher__url_list",
+  // Google Drive — read
+  "mcp__gdrive__listDocuments",
+  "mcp__gdrive__searchDocuments",
+  "mcp__gdrive__listDriveFiles",
+  "mcp__gdrive__searchDriveFiles",
+  "mcp__gdrive__getDocumentInfo",
+  "mcp__gdrive__listFolderContents",
+  "mcp__gdrive__getFolderInfo",
+  "mcp__gdrive__readDocument",
+  "mcp__gdrive__downloadFile",
+  // Google Drive — write
+  "mcp__gdrive__createDocument",
+  "mcp__gdrive__appendText",
+  "mcp__gdrive__insertText",
+  // GitHub — read
+  "mcp__github__search_repositories",
+  "mcp__github__search_code",
+  "mcp__github__search_issues",
+  "mcp__github__get_file_contents",
+  "mcp__github__list_commits",
+  "mcp__github__get_commit",
+  "mcp__github__get_issue",
+  "mcp__github__list_issues",
+  "mcp__github__get_pull_request",
+  "mcp__github__list_pull_requests",
+  "mcp__github__get_pull_request_files",
+  // GitHub — write
+  "mcp__github__create_issue",
+  "mcp__github__add_issue_comment",
+  "mcp__github__create_pull_request_review",
+];
+
+function mcpServers(): Options["mcpServers"] {
+  // The gdrive MCP proxy is started at container boot (docker-entrypoint.sh)
+  // and exposes HTTP, so connecting is instant with no per-query cold start.
+  const gdriveProxyUrl = process.env.GDRIVE_MCP_PROXY_URL;
+  return {
+    ...(gdriveProxyUrl ? { gdrive: { type: "http" as const, url: gdriveProxyUrl } } : {}),
+    github: {
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-github"],
+      env: { GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_TOKEN! },
+    },
+    urlFetcher: {
+      command: "node",
+      args: [path.resolve(__dirname, "../../mcp-url-fetcher/dist/index.js")],
+      env: {
+        DATABASE_URL: process.env.DATABASE_URL!,
+        URL_POLL_INTERVAL_S: process.env.URL_POLL_INTERVAL_S ?? "60",
+      },
+    },
+  };
+}
+
+function buildQueryOptions(
+  systemPrompt: string,
+  model: string | undefined,
+  maxTokens: number | undefined,
+): Options {
+  return {
+    model: resolveModel(model),
+    systemPrompt,
+    env: { ...process.env, ...providerEnv() },
+    allowedTools: ALLOWED_TOOLS,
+    ...(maxTokens !== undefined ? { maxTokens } : {}),
+    mcpServers: mcpServers(),
+  };
+}
+
 async function runAgentOnce(
   prompt: string,
-  systemPrompt: string,
-  model?: string,
-  maxTokens?: number,
+  options: Options,
   images?: ImageContent[],
 ): Promise<string> {
-  const urlFetcherPath = path.resolve(
-    __dirname,
-    "../../mcp-url-fetcher/dist/index.js"
-  );
-
-  // The gdrive MCP proxy is started at container boot (docker-entrypoint.sh).
-  // It spawns google-docs-mcp once, waits for auth, then exposes an HTTP server.
-  // Connecting via URL is instant — no per-query cold-start or handshake timeout.
-  const gdriveProxyUrl = process.env.GDRIVE_MCP_PROXY_URL;
-
   console.log("[agent] MCP servers:", JSON.stringify({
-    gdrive: !!gdriveProxyUrl,
+    gdrive: !!process.env.GDRIVE_MCP_PROXY_URL,
     github: !!process.env.GITHUB_TOKEN,
     urlFetcher: true,
     images: images?.length ?? 0,
   }));
 
-  const sdkPrompt = images?.length
-    ? buildImagePrompt(prompt, images)
-    : prompt;
-
+  const sdkPrompt = images?.length ? buildImagePrompt(prompt, images) : prompt;
   let result = "";
-
-  for await (const message of query({
-    prompt: sdkPrompt,
-    options: {
-      model: resolveModel(model),
-      systemPrompt,
-      env: { ...process.env, ...providerEnv() },
-      allowedTools: [
-        // URL fetcher — read allowed URLs
-        "mcp__urlFetcher__url_fetch",
-        "mcp__urlFetcher__url_list",
-        // Google Drive — read
-        "mcp__gdrive__listDocuments",
-        "mcp__gdrive__searchDocuments",
-        "mcp__gdrive__listDriveFiles",
-        "mcp__gdrive__searchDriveFiles",
-        "mcp__gdrive__getDocumentInfo",
-        "mcp__gdrive__listFolderContents",
-        "mcp__gdrive__getFolderInfo",
-        "mcp__gdrive__readDocument",
-        "mcp__gdrive__downloadFile",
-        // Google Drive — write
-        "mcp__gdrive__createDocument",
-        "mcp__gdrive__appendText",
-        "mcp__gdrive__insertText",
-        // GitHub — read
-        "mcp__github__search_repositories",
-        "mcp__github__search_code",
-        "mcp__github__search_issues",
-        "mcp__github__get_file_contents",
-        "mcp__github__list_commits",
-        "mcp__github__get_commit",
-        "mcp__github__get_issue",
-        "mcp__github__list_issues",
-        "mcp__github__get_pull_request",
-        "mcp__github__list_pull_requests",
-        "mcp__github__get_pull_request_files",
-        // GitHub — write
-        "mcp__github__create_issue",
-        "mcp__github__add_issue_comment",
-        "mcp__github__create_pull_request_review",
-      ],
-      ...(maxTokens !== undefined ? { maxTokens } : {}),
-      mcpServers: {
-        ...(gdriveProxyUrl ? {
-          gdrive: {
-            type: "http" as const,
-            url: gdriveProxyUrl,
-          },
-        } : {}),
-        github: {
-          command: "npx",
-          args: ["-y", "@modelcontextprotocol/server-github"],
-          env: {
-            GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_TOKEN!,
-          },
-        },
-        urlFetcher: {
-          command: "node",
-          args: [urlFetcherPath],
-          env: {
-            DATABASE_URL: process.env.DATABASE_URL!,
-            URL_POLL_INTERVAL_S: process.env.URL_POLL_INTERVAL_S ?? "60",
-          },
-        },
-      },
-    },
-  })) {
+  for await (const message of query({ prompt: sdkPrompt, options })) {
     if ("result" in message) {
       result = message.result;
     }
