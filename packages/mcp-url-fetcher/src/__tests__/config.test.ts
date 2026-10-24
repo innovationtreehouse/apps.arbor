@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { UrlStore, UrlEntry } from "@arbor/db";
 import { UrlConfig } from "../config.js";
 
@@ -14,14 +14,6 @@ const WILDCARD_ITEM: UrlEntry = {
   url: "https://wiki.example.com/*",
   description: "Company Wiki",
   enabled: true,
-  added_by: "U1",
-  added_at: "2026-01-01T00:00:00.000Z",
-};
-
-const DISABLED_ITEM: UrlEntry = {
-  url: "https://old.example.com",
-  description: "Old Docs",
-  enabled: false,
   added_by: "U1",
   added_at: "2026-01-01T00:00:00.000Z",
 };

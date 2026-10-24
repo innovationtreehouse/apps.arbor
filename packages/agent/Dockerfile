@@ -27,11 +27,8 @@ COPY packages/logger/tsconfig.json ./packages/logger/
 COPY packages/mcp-url-fetcher/src ./packages/mcp-url-fetcher/src
 COPY packages/mcp-url-fetcher/tsconfig.json ./packages/mcp-url-fetcher/
 
-# Build
-RUN npm run -w @arbor/db build
-RUN npm run -w @arbor/logger build
-RUN npm run -w @arbor/mcp-url-fetcher build
-RUN npm run -w @arbor/agent build
+# Build (project references pull in db and logger)
+RUN npx tsc --build packages/agent packages/mcp-url-fetcher
 
 # ---------------------------------------------------------------------------
 # Migration runner — runs drizzle-kit migrate and exits

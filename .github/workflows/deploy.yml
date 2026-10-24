@@ -1,0 +1,426 @@
+name: Deploy (reusable)
+
+# Shared by deploy-dev.yml (target dev: build images and Lambda zip) and
+# promote-prod.yml (target prod: retag the dev images, verify the dev zip's
+# SSM digest, tag the release). Callers own triggers, permissions, concurrency.
+on:
+  workflow_call:
+    inputs:
+      target:
+        description: "dev or prod"
+        required: true
+        type: string
+      sha:
+        description: "Git SHA to deploy"
+        required: true
+        type: string
+
+jobs:
+  deploy:
+    name: ${{ inputs.target == 'prod' && format('promote {0} to prod', inputs.sha) || 'deploy / dev' }}
+    runs-on: ubuntu-24.04-arm
+    # prod waits on the production approval gate; development has no protection rules.
+    environment: ${{ inputs.target == 'prod' && 'production' || 'development' }}
+    env:
+      TARGET: ${{ inputs.target }}
+      SUFFIX: ${{ inputs.target == 'prod' && 'PROD' || 'DEV' }}
+      SHA: ${{ inputs.sha }}
+      REGISTRY: ghcr.io/innovationtreehouse
+
+    steps:
+      - name: Check holdoff
+        if: vars.DEPLOY_PAUSED == 'true'
+        run: |
+          echo "::notice::Deployments are paused (DEPLOY_PAUSED=true). Set the variable to false in repo settings to resume."
+          exit 1
+
+      - name: Skip if newer SHA has passed CI
+        if: inputs.target == 'dev'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Queued deploys no-op and the latest does the real work. SKIP_DEPLOY
+          # (not exit 0) skips every later step and leaves SSM unchanged, so the
+          # next real deploy notifies every PR author in the batch.
+          LATEST_SHA=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=1" \
+            --jq '.workflow_runs[0].head_sha' 2>/dev/null || echo "")
+          if [ -n "$LATEST_SHA" ] && [ "$LATEST_SHA" != "$SHA" ]; then
+            echo "::notice::Skipping deploy of ${SHA:0:8} — newer SHA ${LATEST_SHA:0:8} has already passed CI."
+            echo "SKIP_DEPLOY=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Validate SHA input
+        if: inputs.target == 'prod'
+        run: |
+          if ! echo "$SHA" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "Invalid SHA: must be exactly 40 lowercase hex characters"
+            exit 1
+          fi
+
+      - name: Generate release tag
+        if: inputs.target == 'prod'
+        id: release-tag
+        run: |
+          TAG="prod-$(date -u +%Y%m%d)-${SHA:0:8}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $TAG"
+
+      - uses: actions/checkout@v4
+        if: env.SKIP_DEPLOY != 'true'
+        with:
+          ref: ${{ inputs.sha }}
+          fetch-depth: 0  # needed for git log to find merged PRs
+
+      - name: Verify SHA is on main
+        if: inputs.target == 'prod'
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "SHA $SHA is not on main — refusing to promote"
+            exit 1
+          fi
+          echo "SHA $SHA confirmed on main."
+
+      - uses: actions/setup-node@v4
+        if: env.SKIP_DEPLOY != 'true'
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        if: env.SKIP_DEPLOY != 'true'
+        run: npm ci
+
+      - name: Configure AWS credentials (${{ inputs.target }})
+        if: env.SKIP_DEPLOY != 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets[format('AWS_ROLE_{0}', env.SUFFIX)] }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Log in to ghcr.io
+        if: env.SKIP_DEPLOY != 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        if: inputs.target == 'dev' && env.SKIP_DEPLOY != 'true'
+        run: |
+          docker buildx build --platform linux/arm64 \
+            --push \
+            -t $REGISTRY/arbor-agent:$SHA \
+            -t $REGISTRY/arbor-agent:dev \
+            -f packages/agent/Dockerfile .
+
+      - name: Build and push migrate image
+        if: inputs.target == 'dev' && env.SKIP_DEPLOY != 'true'
+        run: |
+          docker buildx build --platform linux/arm64 \
+            --target migrate \
+            --push \
+            -t $REGISTRY/arbor-agent:migrate-$SHA \
+            -t $REGISTRY/arbor-agent:migrate-dev \
+            -f packages/agent/Dockerfile .
+
+      - name: Verify image is pullable (dev)
+        if: inputs.target == 'dev' && env.SKIP_DEPLOY != 'true'
+        run: |
+          docker buildx imagetools inspect $REGISTRY/arbor-agent:$SHA
+          echo "Image $SHA confirmed in ghcr.io."
+
+      - name: Verify SHA was deployed to dev
+        if: inputs.target == 'prod'
+        run: |
+          # Fail fast before migrations if this SHA was never built and pushed to dev
+          docker buildx imagetools inspect $REGISTRY/arbor-agent:$SHA
+          echo "SHA $SHA confirmed in ghcr.io."
+
+      - name: Pull and tag as prod
+        if: inputs.target == 'prod'
+        run: |
+          docker pull $REGISTRY/arbor-agent:$SHA
+          docker tag  $REGISTRY/arbor-agent:$SHA $REGISTRY/arbor-agent:prod
+          docker push $REGISTRY/arbor-agent:prod
+          docker pull $REGISTRY/arbor-agent:migrate-$SHA
+          docker tag  $REGISTRY/arbor-agent:migrate-$SHA $REGISTRY/arbor-agent:migrate-prod
+          docker push $REGISTRY/arbor-agent:migrate-prod
+
+      - name: Build Lambda zip
+        if: inputs.target == 'dev' && env.SKIP_DEPLOY != 'true'
+        run: |
+          npm run build
+          test -f packages/lambda/dist/index.bundle.js || { echo "Lambda bundle not found — build may have failed"; exit 1; }
+          # Zip the single esbuild bundle as index.js so index.handler resolves.
+          mkdir -p packages/lambda/pkg
+          cp packages/lambda/dist/index.bundle.js packages/lambda/pkg/index.js
+          cd packages/lambda/pkg && zip -r ../lambda.zip .
+
+      - name: Upload Lambda zip to S3
+        if: inputs.target == 'dev' && env.SKIP_DEPLOY != 'true'
+        env:
+          BUCKET: ${{ secrets.LAMBDA_ARTIFACT_BUCKET }}
+        run: |
+          DIGEST=$(sha256sum packages/lambda/lambda.zip | awk '{print $1}')
+          aws s3 cp packages/lambda/lambda.zip s3://$BUCKET/arbor-webhook/$SHA.zip
+          # Write the digest once (--no-overwrite). A re-run of the same SHA must
+          # match the stored digest; a mismatch means the artifact was swapped.
+          EXISTING=$(aws ssm get-parameter \
+            --name "/arbor/artifacts/$SHA/sha256" \
+            --query Parameter.Value --output text 2>/dev/null || echo "")
+          if [ -n "$EXISTING" ]; then
+            if [ "$EXISTING" != "$DIGEST" ]; then
+              echo "Digest mismatch for existing SSM parameter — possible tampering"
+              echo "  stored:   $EXISTING"
+              echo "  computed: $DIGEST"
+              exit 1
+            fi
+            echo "SSM parameter already exists with matching digest — skipping write."
+          else
+            aws ssm put-parameter \
+              --name "/arbor/artifacts/$SHA/sha256" \
+              --value "$DIGEST" \
+              --type String \
+              --no-overwrite
+          fi
+
+      - name: Download Lambda zip from S3
+        if: inputs.target == 'prod'
+        env:
+          BUCKET: ${{ secrets.LAMBDA_ARTIFACT_BUCKET }}
+        run: |
+          aws s3 cp s3://$BUCKET/arbor-webhook/$SHA.zip packages/lambda/lambda.zip
+          # Read digest from SSM (written by dev deploy, separate credential scope from S3)
+          EXPECTED=$(aws ssm get-parameter \
+            --name "/arbor/artifacts/$SHA/sha256" \
+            --query Parameter.Value --output text)
+          ACTUAL=$(sha256sum packages/lambda/lambda.zip | awk '{print $1}')
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "Checksum mismatch — artifact may have been tampered with"
+            echo "  expected: $EXPECTED"
+            echo "  actual:   $ACTUAL"
+            exit 1
+          fi
+          echo "Checksum verified: $ACTUAL"
+
+      - name: Register migrate task definition (${{ inputs.target }})
+        if: env.SKIP_DEPLOY != 'true'
+        id: register-migrate-task-def
+        env:
+          GHCR_PULL_SECRET_ARN: ${{ secrets.GHCR_PULL_SECRET_ARN }}
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition arbor-migrate-$TARGET \
+            --query taskDefinition \
+          | jq --arg img "$REGISTRY/arbor-agent:migrate-$SHA" \
+               --arg ghcr "$GHCR_PULL_SECRET_ARN" \
+              'del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                   .compatibilities, .registeredAt, .registeredBy)
+               | .containerDefinitions[0].image = $img
+               | .containerDefinitions[0].repositoryCredentials = {credentialsParameter: $ghcr}
+               | del(.containerDefinitions[0].entryPoint)
+               | .runtimePlatform = {"cpuArchitecture": "ARM64", "operatingSystemFamily": "LINUX"}' \
+          > /tmp/migrate-task-def.json
+          TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file:///tmp/migrate-task-def.json \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "task_def_arn=$TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Run database migrations (${{ inputs.target }})
+        # drizzle-kit migrate in a short-lived ECS task inside the VPC. Runs before
+        # the code deploy; roll back a bad schema change with a new migration.
+        if: env.SKIP_DEPLOY != 'true'
+        env:
+          TASK_DEF: ${{ steps.register-migrate-task-def.outputs.task_def_arn }}
+          SUBNETS: ${{ secrets[format('SUBNET_IDS_{0}', env.SUFFIX)] }}
+          SECURITY_GROUP: ${{ secrets[format('SECURITY_GROUP_ID_{0}', env.SUFFIX)] }}
+          DB_URL: ${{ secrets[format('DATABASE_URL_{0}', env.SUFFIX)] }}
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --cluster arbor-$TARGET \
+            --task-definition "$TASK_DEF" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SECURITY_GROUP],assignPublicIp=DISABLED}" \
+            --overrides "{\"containerOverrides\":[{\"name\":\"arbor-migrate\",\"environment\":[{\"name\":\"DATABASE_URL\",\"value\":\"$DB_URL\"}]}]}" \
+            --query 'tasks[0].taskArn' --output text)
+          echo "Migration task: $TASK_ARN"
+          aws ecs wait tasks-stopped --cluster arbor-$TARGET --tasks "$TASK_ARN"
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster arbor-$TARGET --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "Migration task failed with exit code $EXIT_CODE"
+            exit 1
+          fi
+          echo "Migrations complete."
+
+      - name: Deploy Lambda (${{ inputs.target }})
+        if: env.SKIP_DEPLOY != 'true'
+        env:
+          BUCKET: ${{ secrets.LAMBDA_ARTIFACT_BUCKET }}
+        run: |
+          aws lambda update-function-code \
+            --function-name arbor-webhook-$TARGET \
+            --s3-bucket $BUCKET \
+            --s3-key arbor-webhook/$SHA.zip
+
+      - name: Wait for Lambda update (${{ inputs.target }})
+        if: env.SKIP_DEPLOY != 'true'
+        run: aws lambda wait function-updated --function-name arbor-webhook-$TARGET
+
+      - name: Set Lambda handler (dev)
+        if: inputs.target == 'dev' && env.SKIP_DEPLOY != 'true'
+        run: |
+          CURRENT=$(aws lambda get-function-configuration \
+            --function-name arbor-webhook-dev \
+            --query 'Handler' --output text)
+          if [ "$CURRENT" != "index.handler" ]; then
+            aws lambda update-function-configuration \
+              --function-name arbor-webhook-dev \
+              --handler index.handler
+            aws lambda wait function-updated --function-name arbor-webhook-dev
+          fi
+
+      - name: Register ECS task definition (${{ inputs.target }})
+        if: env.SKIP_DEPLOY != 'true'
+        id: register-task-def
+        env:
+          DEPLOY_TAG: ${{ steps.release-tag.outputs.tag }}
+          GHCR_PULL_SECRET_ARN: ${{ secrets.GHCR_PULL_SECRET_ARN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # prod also stamps GIT_SHA, DEPLOY_TAG and DEPLOY_DIFF_URL into the container env.
+          DIFF_URL=""
+          if [ "$TARGET" = prod ]; then
+            PREV_SHA=$(aws ssm get-parameter \
+              --name "/arbor/deployed/prod/sha" \
+              --query Parameter.Value --output text 2>/dev/null || echo "")
+            if [ -n "$PREV_SHA" ] && [ "$PREV_SHA" != "$SHA" ]; then
+              DIFF_URL="https://github.com/$REPO/compare/${PREV_SHA}...${SHA}"
+            fi
+          fi
+
+          aws ecs describe-task-definition \
+            --task-definition arbor-agent-$TARGET \
+            --query taskDefinition \
+          | jq --arg img "$REGISTRY/arbor-agent:$SHA" \
+               --arg ghcr "$GHCR_PULL_SECRET_ARN" \
+               --arg target "$TARGET" \
+               --arg sha "$SHA" \
+               --arg tag "$DEPLOY_TAG" \
+               --arg diff_url "$DIFF_URL" \
+              'del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                   .compatibilities, .registeredAt, .registeredBy)
+               | .containerDefinitions[0].image = $img
+               | .containerDefinitions[0].repositoryCredentials = {credentialsParameter: $ghcr}
+               | if $target == "prod" then .containerDefinitions[0].environment = (
+                   (.containerDefinitions[0].environment // [])
+                   | map(select(.name != "GIT_SHA" and .name != "DEPLOY_TAG" and .name != "DEPLOY_DIFF_URL"))
+                   + [{"name": "GIT_SHA", "value": $sha},
+                      {"name": "DEPLOY_TAG", "value": $tag},
+                      {"name": "DEPLOY_DIFF_URL", "value": $diff_url}]
+                 ) else . end
+               | .runtimePlatform = {"cpuArchitecture": "ARM64", "operatingSystemFamily": "LINUX"}' \
+          > /tmp/task-def.json
+          TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file:///tmp/task-def.json \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "task_def_arn=$TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Update ECS service (${{ inputs.target }})
+        if: env.SKIP_DEPLOY != 'true'
+        env:
+          TASK_DEF: ${{ steps.register-task-def.outputs.task_def_arn }}
+        run: |
+          aws ecs update-service \
+            --cluster arbor-$TARGET \
+            --service arbor-agent-$TARGET \
+            --task-definition "$TASK_DEF" \
+            --force-new-deployment
+
+      - name: Wait for ECS service to stabilize (${{ inputs.target }})
+        # On failure the service is degraded. Manual rollback:
+        #   aws ecs update-service --cluster arbor-<target> --service arbor-agent-<target> \
+        #     --task-definition arbor-agent-<target>:<previous-revision>
+        if: env.SKIP_DEPLOY != 'true'
+        run: |
+          aws ecs wait services-stable \
+            --cluster arbor-$TARGET \
+            --services arbor-agent-$TARGET
+
+      - name: Smoke test (${{ inputs.target }})
+        if: env.SKIP_DEPLOY != 'true'
+        env:
+          API_URL: ${{ secrets[format('API_URL_{0}', env.SUFFIX)] }}
+        run: |
+          # Test 1: bad signature → 401 with a non-empty body (the Lambda answered,
+          # not the gateway), without coupling to exact error wording.
+          STATUS=$(curl -s -o /tmp/smoke-body -w "%{http_code}" -X POST "$API_URL/slack/events" \
+            -H "Content-Type: application/json" \
+            -H "x-slack-request-timestamp: $(date +%s)" \
+            -H "x-slack-signature: v0=badhash" \
+            -d '{}')
+          if [ "$STATUS" != "401" ]; then
+            echo "Smoke test 1 failed: expected 401, got $STATUS"
+            exit 1
+          fi
+          if [ ! -s /tmp/smoke-body ]; then
+            echo "Smoke test 1 failed: empty response body"
+            exit 1
+          fi
+
+          # Test 2: nonsense path → 404 (verifies routing is live)
+          STATUS2=$(curl -s -o /dev/null -w "%{http_code}" "$API_URL/no-such-route-xyzzy")
+          if [ "$STATUS2" != "404" ]; then
+            echo "Smoke test 2 failed: expected 404 on /no-such-route-xyzzy, got $STATUS2"
+            exit 1
+          fi
+
+          echo "Smoke tests passed."
+
+      - name: Tag release in git
+        if: success() && inputs.target == 'prod'
+        env:
+          TAG: ${{ steps.release-tag.outputs.tag }}
+        run: |
+          git tag "$TAG" "$SHA"
+          git push origin "$TAG"
+          echo "Tagged $SHA as $TAG"
+
+      - name: Notify merged PRs and record deployed SHA
+        if: success() && env.SKIP_DEPLOY != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          # PREV_SHA is the last real deploy (skipped deploys leave SSM unchanged),
+          # so git log covers the whole batch and every PR gets one comment.
+          PREV_SHA=$(aws ssm get-parameter \
+            --name "/arbor/deployed/$TARGET/sha" \
+            --query Parameter.Value --output text 2>/dev/null || echo "")
+
+          if [ -n "$PREV_SHA" ] && [ "$PREV_SHA" != "$SHA" ]; then
+            COMMITS=$(git log --format="%H" "$PREV_SHA".."$SHA" 2>/dev/null || echo "")
+            NOTIFIED=""
+            for COMMIT in $COMMITS; do
+              PRS=$(gh api "repos/$REPO/commits/$COMMIT/pulls" \
+                --jq '.[].number' 2>/dev/null || echo "")
+              for PR in $PRS; do
+                if echo "$NOTIFIED" | grep -qw "$PR"; then continue; fi
+                NOTIFIED="$NOTIFIED $PR"
+                gh pr comment "$PR" \
+                  --repo "$REPO" \
+                  --body "🚀 Deployed to **$TARGET** (\`${SHA:0:8}\`)" \
+                  2>/dev/null || true
+              done
+            done
+          fi
+
+          aws ssm put-parameter \
+            --name "/arbor/deployed/$TARGET/sha" \
+            --value "$SHA" \
+            --type String \
+            --overwrite

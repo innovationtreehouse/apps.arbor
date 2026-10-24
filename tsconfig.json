@@ -1,0 +1,10 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/db" },
+    { "path": "packages/logger" },
+    { "path": "packages/lambda" },
+    { "path": "packages/mcp-url-fetcher" },
+    { "path": "packages/agent" }
+  ]
+}

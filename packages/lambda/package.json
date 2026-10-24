@@ -4,7 +4,7 @@
   "private": true,
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc && node build.mjs",
+    "build": "tsc --build && node build.mjs",
     "clean": "rm -rf dist"
   },
   "dependencies": {
