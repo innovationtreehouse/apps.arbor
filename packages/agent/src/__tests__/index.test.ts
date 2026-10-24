@@ -49,6 +49,10 @@ vi.mock("../agent.js", () => ({
   runAgent: vi.fn().mockResolvedValue("Agent response"),
 }));
 
+vi.mock("../retrieval/answer.js", () => ({
+  research: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("../prompt.js", () => ({
   buildPrompt: vi.fn().mockReturnValue("built prompt"),
   buildSystemPrompt: vi.fn().mockReturnValue("system prompt"),
@@ -63,6 +67,7 @@ const { fetchThreadHistory, fetchChannelHistory, fetchSlackImages, postMessage, 
 const { runAgent } = await import("../agent.js");
 const { buildPrompt, buildSystemPrompt } = await import("../prompt.js");
 const { processEvent, isAdminCommand, isSlackEvent } = await import("../index.js");
+const { research } = await import("../retrieval/answer.js");
 
 const baseEvent = {
   channel: "C_CHAN",
@@ -382,5 +387,40 @@ describe("SQS message guards", () => {
     expect(isSlackEvent({ text: "hi" })).toBe(false);
     expect(isSlackEvent("str")).toBe(false);
     expect(isSlackEvent(null)).toBe(false);
+  });
+});
+
+describe("processEvent research pre-pass", () => {
+  it("appends research evidence to the prompt, passes the stage models, and logs usage", async () => {
+    vi.mocked(mockConfigStore.get).mockImplementation(async (key: string) =>
+      ({ "model:fetch": "google/flash", "model:decide": "google/decide" } as Record<string, string>)[key]);
+    vi.mocked(research).mockResolvedValueOnce({
+      context: "\n---evidence---",
+      usage: { fetch: { calls: 2, prompt_tokens: 1, completion_tokens: 1, cost: 0 }, decide: { calls: 1, prompt_tokens: 1, completion_tokens: 1, cost: 0 } },
+      status: { github: "ok, 1 result" },
+    });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(runAgent).mockResolvedValueOnce("answer");
+    await processEvent(baseEvent);
+    expect(research).toHaveBeenCalledWith(baseEvent.text, expect.objectContaining({ fetchModel: "google/flash", decideModel: "google/decide" }));
+    expect(vi.mocked(runAgent).mock.calls[0][0]).toBe("built prompt\n---evidence---");
+    expect(log.mock.calls.some(([line]) => String(line).startsWith("[usage] ") && String(line).includes('"calls":2'))).toBe(true);
+    log.mockRestore();
+  });
+
+  it("answers without evidence when research throws", async () => {
+    vi.mocked(research).mockRejectedValueOnce(new Error("boom"));
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(runAgent).mockResolvedValueOnce("answer");
+    await processEvent(baseEvent);
+    expect(vi.mocked(runAgent).mock.calls[0][0]).toBe("built prompt");
+    error.mockRestore();
+  });
+
+  it("skips research for discretion events", async () => {
+    vi.mocked(research).mockClear();
+    vi.mocked(runAgent).mockResolvedValueOnce("__NO_REPLY__");
+    await processEvent({ ...baseEvent, requires_discretion: true });
+    expect(research).not.toHaveBeenCalled();
   });
 });
