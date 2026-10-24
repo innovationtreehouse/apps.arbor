@@ -151,7 +151,7 @@ describe("runAgent", () => {
   it("throws immediately with a clear message when MAX_MCP_RETRIES is negative", async () => {
     process.env.MAX_MCP_RETRIES = "-1";
     // query should never be called — the loop body never executes
-    const result = await expect(runAgent("prompt", "system")).rejects.toThrow(
+    await expect(runAgent("prompt", "system")).rejects.toThrow(
       "runAgent: no attempts made"
     );
     expect(vi.mocked(query)).not.toHaveBeenCalled();
