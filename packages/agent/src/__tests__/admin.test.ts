@@ -133,11 +133,19 @@ describe("remove", () => {
     expect(text).toContain("Usage:");
   });
 
-  it("deletes the URL", async () => {
-    vi.mocked(mockUrlStore.delete).mockResolvedValueOnce(undefined);
+  it("deletes the URL with and without the trailing * that add stores", async () => {
+    vi.mocked(mockUrlStore.delete).mockResolvedValue(undefined);
     const text = await runCommand("remove", ["https://docs.example.com"]);
     expect(text).toContain("Removed");
     expect(mockUrlStore.delete).toHaveBeenCalledWith("https://docs.example.com");
+    expect(mockUrlStore.delete).toHaveBeenCalledWith("https://docs.example.com*");
+  });
+
+  it("accepts the stored form with the trailing *", async () => {
+    vi.mocked(mockUrlStore.delete).mockResolvedValue(undefined);
+    await runCommand("remove", ["https://docs.example.com*"]);
+    expect(mockUrlStore.delete).toHaveBeenCalledWith("https://docs.example.com");
+    expect(mockUrlStore.delete).toHaveBeenCalledWith("https://docs.example.com*");
   });
 });
 
@@ -449,6 +457,8 @@ describe("check", () => {
     expect(text).toContain("GitHub");
     expect(text).toContain("jeff");
     expect(text).toContain("3 URLs");
+    expect(text).toContain("✅ *OpenRouter*: key configured via");
+    expect(text).not.toContain("sk-or-");
   });
 
   it("reports DB error in URL fetcher check", async () => {

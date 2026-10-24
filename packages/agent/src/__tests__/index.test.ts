@@ -52,6 +52,7 @@ vi.mock("../agent.js", () => ({
 vi.mock("../prompt.js", () => ({
   buildPrompt: vi.fn().mockReturnValue("built prompt"),
   buildSystemPrompt: vi.fn().mockReturnValue("system prompt"),
+  NO_REPLY_SENTINEL: "__NO_REPLY__",
 }));
 
 const sqsMock = mockClient(SQSClient);
@@ -61,7 +62,7 @@ process.env.DATABASE_URL = "postgres://localhost/test";
 const { fetchThreadHistory, fetchChannelHistory, fetchSlackImages, postMessage, postEphemeral } = await import("../slack.js");
 const { runAgent } = await import("../agent.js");
 const { buildPrompt, buildSystemPrompt } = await import("../prompt.js");
-const { processEvent } = await import("../index.js");
+const { processEvent, isAdminCommand, isSlackEvent } = await import("../index.js");
 
 const baseEvent = {
   channel: "C_CHAN",
@@ -341,5 +342,45 @@ describe("processEvent", () => {
       undefined,
       [],
     );
+  });
+});
+
+describe("config fallback", () => {
+  it("logs failed config reads and still runs the agent with defaults", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(mockConfigStore.get).mockImplementation(async (key: string) => {
+      if (key === "model") throw new Error("db down");
+      if (key === "token_limit:default") return "4096";
+      return undefined;
+    });
+
+    await processEvent(baseEvent);
+
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    expect(errSpy.mock.calls[0][0]).toContain("model: Error: db down");
+    expect(runAgent).toHaveBeenCalledWith("built prompt", "system prompt", undefined, 4096, []);
+    errSpy.mockRestore();
+  });
+});
+
+describe("SQS message guards", () => {
+  const admin = { type: "admin_command", subcommand: "list", args: [], userId: "U1", responseUrl: "https://x" };
+
+  it("accepts a well-formed admin command", () => {
+    expect(isAdminCommand(admin)).toBe(true);
+  });
+
+  it("rejects admin commands missing fields", () => {
+    expect(isAdminCommand({ ...admin, args: "list" })).toBe(false);
+    expect(isAdminCommand({ ...admin, responseUrl: undefined })).toBe(false);
+    expect(isAdminCommand(null)).toBe(false);
+  });
+
+  it("accepts a Slack event and rejects malformed ones", () => {
+    expect(isSlackEvent(baseEvent)).toBe(true);
+    expect(isSlackEvent({ ...baseEvent, channel: 1 })).toBe(false);
+    expect(isSlackEvent({ text: "hi" })).toBe(false);
+    expect(isSlackEvent("str")).toBe(false);
+    expect(isSlackEvent(null)).toBe(false);
   });
 });

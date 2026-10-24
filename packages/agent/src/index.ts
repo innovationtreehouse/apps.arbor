@@ -4,16 +4,15 @@ import {
   DeleteMessageCommand,
 } from "@aws-sdk/client-sqs";
 import { PostgresConfigStore, PostgresAuditStore, PostgresUrlStore } from "@arbor/db";
+import type { ConfigStore } from "@arbor/db";
 import { createAuditLogger } from "@arbor/logger";
 import { fetchChannelHistory, fetchThreadHistory, fetchSlackImages, postMessage, postEphemeral } from "./slack.js";
 import type { SlackFile } from "./slack.js";
 import { runAgent } from "./agent.js";
-import { buildPrompt, buildSystemPrompt } from "./prompt.js";
+import { buildPrompt, buildSystemPrompt, NO_REPLY_SENTINEL } from "./prompt.js";
 import { BatchBuffer, type BatchEvent } from "./batch-buffer.js";
-import { processAdminCommand } from "./admin.js";
+import { processAdminCommand, type AdminCommand } from "./admin.js";
 import { providerEnv } from "./provider.js";
-
-export const NO_REPLY_SENTINEL = "__NO_REPLY__";
 
 export type SlackEvent = BatchEvent & {
   holdoff?: boolean;
@@ -39,6 +38,34 @@ const SQS_WAIT_SECONDS = 20;
 // Number of channel messages to include as compacted context in thread replies
 const THREAD_CHANNEL_CONTEXT = 4;
 
+export function isAdminCommand(m: unknown): m is AdminCommand {
+  const c = m as AdminCommand;
+  return c?.type === "admin_command" && typeof c.subcommand === "string" && Array.isArray(c.args)
+    && typeof c.userId === "string" && typeof c.responseUrl === "string";
+}
+
+export function isSlackEvent(m: unknown): m is SlackEvent {
+  const e = m as SlackEvent;
+  return typeof e?.channel === "string" && typeof e.thread_ts === "string" && typeof e.user === "string";
+}
+
+// A failed config read falls back to defaults so the user still gets a reply.
+async function resolveConfig(store: ConfigStore, channel: string) {
+  const keys = ["model", `token_limit:${channel}`, "token_limit:default", "prompt:system", "prompt:user"];
+  const results = await Promise.allSettled(keys.map((key) => store.get(key)));
+  const failed = results.flatMap((r, i) => (r.status === "rejected" ? [`${keys[i]}: ${r.reason}`] : []));
+  if (failed.length > 0) console.error(`[agent] config read failed, using defaults: ${failed.join("; ")}`);
+  const [model, channelLimit, defaultLimit, systemOverride, userTemplate] =
+    results.map((r) => (r.status === "fulfilled" ? r.value : undefined));
+  const limit = parseInt(channelLimit ?? defaultLimit ?? "", 10);
+  return {
+    model,
+    maxTokens: limit > 0 ? limit : undefined,
+    systemOverride: systemOverride || undefined,
+    userTemplate: userTemplate || undefined,
+  };
+}
+
 export async function processEvent(event: SlackEvent): Promise<void> {
   // Only show the ephemeral "Searching…" when we know we'll always reply.
   // For discretion-mode events, skip it — the bot may decide not to reply
@@ -47,15 +74,7 @@ export async function processEvent(event: SlackEvent): Promise<void> {
     await postEphemeral(event.channel, event.user, "_Searching…_");
   }
 
-  const [model, channelLimit, defaultLimit, systemOverride, userTemplate] = await Promise.all([
-    configStore.get("model").catch(() => undefined),
-    configStore.get(`token_limit:${event.channel}`).catch(() => undefined),
-    configStore.get("token_limit:default").catch(() => undefined),
-    configStore.get("prompt:system").catch(() => undefined),
-    configStore.get("prompt:user").catch(() => undefined),
-  ]);
-  const rawLimit = channelLimit ?? defaultLimit;
-  const maxTokens = rawLimit !== undefined && parseInt(rawLimit, 10) > 0 ? parseInt(rawLimit, 10) : undefined;
+  const { model, maxTokens, systemOverride, userTemplate } = await resolveConfig(configStore, event.channel);
 
   // Fetch conversation history based on context type:
   // - thread: full thread + up to THREAD_CHANNEL_CONTEXT recent channel messages
@@ -65,10 +84,10 @@ export async function processEvent(event: SlackEvent): Promise<void> {
     ? await fetchChannelHistory(event.channel, THREAD_CHANNEL_CONTEXT).catch(() => [])
     : [];
 
-  const prompt = buildPrompt(history, event.text, userTemplate || undefined, channelContext);
+  const prompt = buildPrompt(history, event.text, userTemplate, channelContext);
   const systemPrompt = buildSystemPrompt(
-    systemOverride || undefined,
-    userTemplate || undefined,
+    systemOverride,
+    userTemplate,
     { requiresDiscretion: event.requires_discretion ?? false }
   );
 
@@ -136,16 +155,17 @@ async function main(): Promise<void> {
     const sqsMessage = result.Messages[0];
 
     try {
-      const parsed = JSON.parse(sqsMessage.Body!);
-      if (parsed.type === "admin_command") {
+      const parsed: unknown = JSON.parse(sqsMessage.Body ?? "");
+      if (isAdminCommand(parsed)) {
         await processAdminCommand(parsed, { urlStore, configStore, auditStore });
-      } else {
-        const event: SlackEvent = parsed;
-        if (event.holdoff) {
-          batchBuffer.add(event);
+      } else if (isSlackEvent(parsed)) {
+        if (parsed.holdoff) {
+          batchBuffer.add(parsed);
         } else {
-          await processEvent(event);
+          await processEvent(parsed);
         }
+      } else {
+        console.error(`[agent] dropping malformed SQS message ${sqsMessage.MessageId}`);
       }
     } catch (err) {
       console.error("Failed to process event:", err);

@@ -17,7 +17,7 @@ import {
 import { createServer, IncomingMessage, ServerResponse } from "http";
 import { randomUUID } from "crypto";
 
-const PORT = parseInt(process.env.GDRIVE_MCP_PORT ?? "8123");
+const PORT = parseInt(process.env.GDRIVE_MCP_PORT ?? "8123", 10);
 const SERVICE_ACCOUNT_PATH = process.env.SERVICE_ACCOUNT_PATH;
 const GOOGLE_IMPERSONATE_USER = process.env.GOOGLE_IMPERSONATE_USER;
 // Use the installed binary. Slow startup (~5s) is acceptable because the proxy
@@ -41,12 +41,13 @@ async function main() {
   const clientTransport = new StdioClientTransport({
     command: "node",
     args: [MCP_SCRIPT],
-    // Spread full env so node can find modules; override/add the auth vars.
+    // Only the auth vars; the transport adds PATH, HOME and the other safe defaults.
+    // The child never sees DATABASE_URL, tokens or API keys.
     env: {
-      ...process.env,
-      SERVICE_ACCOUNT_PATH,
+      SERVICE_ACCOUNT_PATH: SERVICE_ACCOUNT_PATH!,
       ...(GOOGLE_IMPERSONATE_USER ? { GOOGLE_IMPERSONATE_USER } : {}),
-    } as Record<string, string>,
+      ...(process.env.NODE_ENV ? { NODE_ENV: process.env.NODE_ENV } : {}),
+    },
     stderr: "inherit",
   });
 

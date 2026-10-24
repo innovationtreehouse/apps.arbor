@@ -43,6 +43,29 @@ export function listToolsHandler() {
   };
 }
 
+// Hostname check only (no DNS): a public name that resolves to a private address still passes.
+export function isPrivateHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (h === "localhost" || /\.(localhost|local|internal)$/.test(h)) return true;
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(h)) return /^(127|10|0|192\.168|169\.254|172\.(1[6-9]|2\d|3[01]))\./.test(h);
+  // IPv6 loopback/unspecified, fc00::/7 unique-local, fe80::/10 link-local, IPv4-mapped.
+  return h.includes(":") && (h === "::1" || h === "::" || /^(f[cd]|fe[89ab])[0-9a-f]*:/.test(h) || h.startsWith("::ffff:"));
+}
+
+async function fetchPublic(url: string): Promise<Response> {
+  if (isPrivateHost(new URL(url).hostname)) throw new Error(`refusing private or local host: ${url}`);
+  return fetch(url, {
+    headers: { "User-Agent": "Squirrel-Bot/1.0" },
+    redirect: "manual",
+    signal: AbortSignal.timeout(15_000),
+  });
+}
+
+const isRedirect = (res: Response) => res.status >= 300 && res.status < 400;
+
+const ok = (text: string) => ({ content: [{ type: "text", text }] });
+const err = (text: string) => ({ isError: true, content: [{ type: "text", text }] });
+
 export async function callToolHandler(
   config: UrlConfig,
   name: string,
@@ -50,69 +73,33 @@ export async function callToolHandler(
 ) {
   if (name === "url_list") {
     const entries = config.getAll();
-    if (entries.length === 0) {
-      return {
-        content: [{ type: "text", text: "No URLs are currently configured." }],
-      };
-    }
+    if (entries.length === 0) return ok("No URLs are currently configured.");
     const lines = entries.map((e) => `- ${e.url}\n  ${e.description}`);
-    return {
-      content: [
-        { type: "text", text: "Configured URLs:\n" + lines.join("\n") },
-      ],
-    };
+    return ok("Configured URLs:\n" + lines.join("\n"));
   }
 
   if (name === "url_fetch") {
     const url = (args as Record<string, unknown>)?.url;
-    if (typeof url !== "string" || !url) {
-      return {
-        isError: true,
-        content: [{ type: "text", text: "Missing required parameter: url" }],
-      };
-    }
-
+    if (typeof url !== "string" || !url) return err("Missing required parameter: url");
     if (!config.isAllowed(url)) {
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text",
-            text: `URL not on allowlist: ${url}\nUse url_list to see available URLs.`,
-          },
-        ],
-      };
+      return err(`URL not on allowlist: ${url}\nUse url_list to see available URLs.`);
     }
 
     try {
-      const response = await fetch(url, {
-        headers: { "User-Agent": "Squirrel-Bot/1.0" },
-        signal: AbortSignal.timeout(15_000),
-      });
-
-      if (!response.ok) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `HTTP ${response.status} ${response.statusText} for ${url}`,
-            },
-          ],
-        };
+      let response = await fetchPublic(url);
+      // Follow one redirect, and only to another allowlisted URL.
+      if (isRedirect(response)) {
+        const location = response.headers.get("location");
+        const next = location ? new URL(location, url).href : "(no Location header)";
+        if (!config.isAllowed(next)) return err(`Redirect from ${url} to ${next} is not on the allowlist`);
+        response = await fetchPublic(next);
+        if (isRedirect(response)) return err(`Too many redirects for ${url}`);
       }
+      if (!response.ok) return err(`HTTP ${response.status} ${response.statusText} for ${url}`);
 
       const contentType = response.headers.get("content-type") ?? "";
       if (!contentType.includes("text") && !contentType.includes("json")) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Unsupported content type: ${contentType}. Only text and JSON are supported.`,
-            },
-          ],
-        };
+        return err(`Unsupported content type: ${contentType}. Only text and JSON are supported.`);
       }
 
       let text = await response.text();
@@ -123,27 +110,13 @@ export async function callToolHandler(
       }
 
       const description = config.getDescription(url);
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Source: ${url}${description ? ` (${description})` : ""}\n\n${text}`,
-          },
-        ],
-      };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return {
-        isError: true,
-        content: [{ type: "text", text: `Fetch error: ${msg}` }],
-      };
+      return ok(`Source: ${url}${description ? ` (${description})` : ""}\n\n${text}`);
+    } catch (e: unknown) {
+      return err(`Fetch error: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
-  return {
-    isError: true,
-    content: [{ type: "text", text: `Unknown tool: ${name}` }],
-  };
+  return err(`Unknown tool: ${name}`);
 }
 
 /* v8 ignore start */

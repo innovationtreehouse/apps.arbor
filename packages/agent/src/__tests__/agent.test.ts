@@ -6,7 +6,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 }));
 
 const { query } = await import("@anthropic-ai/claude-agent-sdk");
-const { runAgent } = await import("../agent.js");
+const { runAgent, ALLOWED_TOOLS } = await import("../agent.js");
 
 
 process.env.AWS_REGION = "us-east-1";
@@ -253,7 +253,7 @@ describe("runAgent", () => {
     vi.useRealTimers();
   });
 
-  it("passes maxTokens to query options when provided", async () => {
+  it("caps output tokens via CLAUDE_CODE_MAX_OUTPUT_TOKENS when maxTokens is provided", async () => {
     vi.mocked(query).mockReturnValue(
       (async function* () {
         yield { result: "ok" };
@@ -262,11 +262,12 @@ describe("runAgent", () => {
 
     await runAgent("prompt", "system", undefined, 2048);
 
-    const callArgs = vi.mocked(query).mock.calls[0][0];
-    expect(callArgs.options?.maxTokens).toBe(2048);
+    const options = vi.mocked(query).mock.calls[0][0].options;
+    expect(options?.env?.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe("2048");
+    expect(options).not.toHaveProperty("maxTokens");
   });
 
-  it("omits maxTokens from query options when not provided", async () => {
+  it("leaves CLAUDE_CODE_MAX_OUTPUT_TOKENS unset when maxTokens is not provided", async () => {
     vi.mocked(query).mockReturnValue(
       (async function* () {
         yield { result: "ok" };
@@ -275,8 +276,8 @@ describe("runAgent", () => {
 
     await runAgent("prompt", "system");
 
-    const callArgs = vi.mocked(query).mock.calls[0][0];
-    expect(callArgs.options).not.toHaveProperty("maxTokens");
+    const options = vi.mocked(query).mock.calls[0][0].options;
+    expect(options?.env).not.toHaveProperty("CLAUDE_CODE_MAX_OUTPUT_TOKENS");
   });
 
   it("passes DATABASE_URL to urlFetcher MCP env", async () => {
@@ -292,5 +293,93 @@ describe("runAgent", () => {
     const { mcpServers } = vi.mocked(query).mock.calls[0][0].options ?? {};
     expect((mcpServers as any)?.urlFetcher?.env?.DATABASE_URL).toBe("postgres://localhost/test");
     expect((mcpServers as any)?.urlFetcher?.env).not.toHaveProperty("DYNAMODB_TABLE");
+  });
+
+  it("passes the tool allowlist as data", async () => {
+    vi.mocked(query).mockReturnValue((async function* () { yield { result: "ok" }; })());
+    await runAgent("prompt", "system");
+    expect(vi.mocked(query).mock.calls[0][0].options?.allowedTools).toEqual(ALLOWED_TOOLS);
+  });
+
+  it("sets maxTurns from AGENT_MAX_TURNS with a default of 30", async () => {
+    vi.mocked(query).mockImplementation(async function* () { yield { result: "ok" }; });
+    await runAgent("prompt", "system");
+    process.env.AGENT_MAX_TURNS = "5";
+    await runAgent("prompt", "system");
+    delete process.env.AGENT_MAX_TURNS;
+    expect(vi.mocked(query).mock.calls[0][0].options?.maxTurns).toBe(30);
+    expect(vi.mocked(query).mock.calls[1][0].options?.maxTurns).toBe(5);
+  });
+
+  it("does not retry errors that only mention sockets or networks", async () => {
+    vi.mocked(query).mockImplementation(async function* () {
+      throw new Error("network policy denied: socket not permitted");
+    });
+    await expect(runAgent("prompt", "system")).rejects.toThrow("network policy denied");
+    expect(vi.mocked(query)).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries rate limits and overload", async () => {
+    vi.useFakeTimers();
+    vi.mocked(query)
+      .mockImplementationOnce(async function* () { throw new Error("429 rate_limit_error"); })
+      .mockImplementationOnce(async function* () { throw new Error("529 overloaded_error"); })
+      .mockImplementation(async function* () { yield { result: "ok" }; });
+    const resultPromise = runAgent("prompt", "system");
+    await vi.runAllTimersAsync();
+    expect(await resultPromise).toBe("ok");
+    expect(vi.mocked(query)).toHaveBeenCalledTimes(3);
+    vi.useRealTimers();
+  });
+
+  // The SDK either throws an AbortError or ends the stream; both must surface as a timeout.
+  it.each([
+    ["throws", true],
+    ["ends the stream", false],
+  ])("aborts after AGENT_TIMEOUT_S without retrying when the SDK %s", async (_label, throws) => {
+    vi.useFakeTimers();
+    process.env.AGENT_TIMEOUT_S = "2";
+    vi.mocked(query).mockImplementation(async function* ({ options }) {
+      const signal = options!.abortController!.signal;
+      await new Promise((resolve) => signal.addEventListener("abort", resolve));
+      if (throws) throw new Error("Claude Code process aborted by user");
+    });
+
+    const resultPromise = runAgent("prompt", "system");
+    const assertion = expect(resultPromise).rejects.toThrow("Agent timed out after 2s");
+    await vi.advanceTimersByTimeAsync(2000);
+    await assertion;
+    expect(vi.mocked(query)).toHaveBeenCalledTimes(1);
+    delete process.env.AGENT_TIMEOUT_S;
+    vi.useRealTimers();
+  });
+
+  it("falls back to 30 turns when AGENT_MAX_TURNS is not a positive number", async () => {
+    vi.mocked(query).mockImplementation(async function* () { yield { result: "ok" }; });
+    process.env.AGENT_MAX_TURNS = "lots";
+    await runAgent("prompt", "system");
+    process.env.AGENT_MAX_TURNS = "0";
+    await runAgent("prompt", "system");
+    delete process.env.AGENT_MAX_TURNS;
+    expect(vi.mocked(query).mock.calls[0][0].options?.maxTurns).toBe(30);
+    expect(vi.mocked(query).mock.calls[1][0].options?.maxTurns).toBe(30);
+  });
+
+  it("falls back to the 240 s deadline when AGENT_TIMEOUT_S is not a positive number", async () => {
+    vi.useFakeTimers();
+    process.env.AGENT_TIMEOUT_S = "abc";
+    vi.mocked(query).mockImplementation(async function* ({ options }) {
+      const signal = options!.abortController!.signal;
+      await new Promise((resolve) => signal.addEventListener("abort", resolve));
+    });
+
+    const resultPromise = runAgent("prompt", "system");
+    const assertion = expect(resultPromise).rejects.toThrow("Agent timed out after 240s");
+    await vi.advanceTimersByTimeAsync(239_999);
+    expect(vi.mocked(query)).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await assertion;
+    delete process.env.AGENT_TIMEOUT_S;
+    vi.useRealTimers();
   });
 });

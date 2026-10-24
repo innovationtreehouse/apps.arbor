@@ -1,8 +1,8 @@
-import type { UrlStore, ConfigStore, AuditStore } from "@arbor/db";
+import type { UrlStore, ConfigStore, AuditStore, AuditRecord } from "@arbor/db";
 import { buildSystemPrompt, defaultSystemPrompt, DEFAULT_USER_PROMPT_TEMPLATE } from "./prompt.js";
 import { DEFAULT_MODEL, openRouterBaseUrl } from "./provider.js";
 
-interface AdminCommand {
+export interface AdminCommand {
   type: "admin_command";
   subcommand: string;
   args: string[];
@@ -17,6 +17,10 @@ interface Stores {
 }
 
 const MAX_URL_COUNT = parseInt(process.env.MAX_URL_COUNT ?? "100", 10);
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 export async function processAdminCommand(cmd: AdminCommand, stores: Stores): Promise<void> {
   const { subcommand, args, userId, responseUrl } = cmd;
@@ -65,8 +69,7 @@ export async function processAdminCommand(cmd: AdminCommand, stores: Stores): Pr
         text = `Unknown subcommand: \`${subcommand}\`. Try \`/squirrel-admin help\`.`;
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    text = `❌ Command failed: ${msg}`;
+    text = `❌ Command failed: ${errorMessage(err)}`;
   }
 
   await fetch(responseUrl, {
@@ -106,7 +109,9 @@ async function handleAdd(args: string[], userId: string, urlStore: UrlStore): Pr
 
 async function handleRemove(args: string[], urlStore: UrlStore): Promise<string> {
   if (args.length < 1) return "Usage: `/squirrel-admin remove <url>`";
-  await urlStore.delete(args[0]);
+  // `add` stores "<url>*", so accept the URL as typed with or without the star.
+  const bare = args[0].replace(/\*$/, "");
+  await Promise.all([urlStore.delete(bare), urlStore.delete(`${bare}*`)]);
   return `✅ Removed: *${args[0]}*`;
 }
 
@@ -126,8 +131,7 @@ async function handleTest(args: string[]): Promise<string> {
     const preview = text.slice(0, 500).trim();
     return `✅ *${url}* is reachable (HTTP ${response.status})\n\n*Content preview:*\n\`\`\`\n${preview}\n\`\`\``;
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return `❌ Fetch failed: ${msg}`;
+    return `❌ Fetch failed: ${errorMessage(err)}`;
   }
 }
 
@@ -146,16 +150,20 @@ async function handleModel(args: string[], configStore: ConfigStore): Promise<st
   return `✅ Model set to \`${args[0]}\`. Takes effect on the next message.`;
 }
 
+function auditLine(r: AuditRecord, where = ""): string {
+  const ts = new Date(r.created_at).toISOString().replace("T", " ").slice(0, 19);
+  return `• \`${ts}\` <@${r.user_id}>${where} (${r.duration_ms}ms, ${r.model ?? "default"})`;
+}
+
+function clip(text: string, max: number): string {
+  return text.slice(0, max).replace(/\n/g, " ") + (text.length > max ? "…" : "");
+}
+
 async function handleAudit(args: string[], auditStore: AuditStore): Promise<string> {
   const limit = Math.min(parseInt(args[0] ?? "10", 10) || 10, 50);
   const records = await auditStore.listRecent(limit);
   if (records.length === 0) return "No audit records found.";
-  const lines = records.map((r) => {
-    const ts = new Date(r.created_at).toISOString().replace("T", " ").slice(0, 19);
-    const model = r.model ?? "default";
-    const summary = r.prompt.slice(0, 80).replace(/\n/g, " ");
-    return `• \`${ts}\` <@${r.user_id}> in <#${r.channel}> (${r.duration_ms}ms, ${model})\n  _${summary}${r.prompt.length > 80 ? "…" : ""}_`;
-  });
+  const lines = records.map((r) => `${auditLine(r, ` in <#${r.channel}>`)}\n  _${clip(r.prompt, 80)}_`);
   return `*Recent interactions (${records.length}):*\n${lines.join("\n")}`;
 }
 
@@ -164,11 +172,8 @@ async function handleAuditThread(args: string[], auditStore: AuditStore): Promis
   const [channel, thread_ts] = args;
   const records = await auditStore.listByThread(channel, thread_ts);
   if (records.length === 0) return "No audit records found for that thread.";
-  const lines = records.map((r) => {
-    const ts = new Date(r.created_at).toISOString().replace("T", " ").slice(0, 19);
-    const model = r.model ?? "default";
-    return `• \`${ts}\` <@${r.user_id}> (${r.duration_ms}ms, ${model})\n  *Prompt:* ${r.prompt.slice(0, 120).replace(/\n/g, " ")}${r.prompt.length > 120 ? "…" : ""}\n  *Response:* ${r.response.slice(0, 120).replace(/\n/g, " ")}${r.response.length > 120 ? "…" : ""}`;
-  });
+  const lines = records.map((r) =>
+    `${auditLine(r)}\n  *Prompt:* ${clip(r.prompt, 120)}\n  *Response:* ${clip(r.response, 120)}`);
   return `*Thread interactions (${records.length}):*\n${lines.join("\n")}`;
 }
 
@@ -188,70 +193,43 @@ async function handleTokenLimit(args: string[], configStore: ConfigStore): Promi
 }
 
 async function handleCheck(urlStore: UrlStore): Promise<string> {
-  const results: string[] = [];
+  const results = await Promise.all([checkGoogleDrive(), checkGitHub(), checkOpenRouter(), checkUrlFetcher(urlStore)]);
+  return `*Data source health check:*\n${results.join("\n")}`;
+}
 
-  // Google Drive
-  const googleCreds = process.env.GOOGLE_CREDENTIALS;
-  if (!googleCreds) {
-    results.push("❌ *Google Drive*: `GOOGLE_CREDENTIALS` not set");
-  } else {
-    try {
-      const creds = JSON.parse(googleCreds);
-      const requiredFields = ["client_email", "private_key", "project_id"];
-      const missing = requiredFields.filter((f) => !creds[f]);
-      if (missing.length > 0) {
-        results.push(`❌ *Google Drive*: credentials JSON missing fields: ${missing.join(", ")}`);
-      } else {
-        // Try a lightweight Drive API call using the service account JWT
-        const driveResult = await checkGoogleDrive(creds);
-        results.push(driveResult);
-      }
-    } catch {
-      results.push("❌ *Google Drive*: `GOOGLE_CREDENTIALS` is not valid JSON");
-    }
-  }
-
-  // GitHub
+async function checkGitHub(): Promise<string> {
   const githubToken = process.env.GITHUB_TOKEN;
-  if (!githubToken) {
-    results.push("❌ *GitHub*: `GITHUB_TOKEN` not set");
-  } else {
-    try {
-      const res = await fetch("https://api.github.com/user", {
-        headers: { Authorization: `Bearer ${githubToken}`, "User-Agent": "Squirrel-Bot/1.0" },
-        signal: AbortSignal.timeout(8_000),
-      });
-      if (res.ok) {
-        const user = await res.json() as { login?: string };
-        results.push(`✅ *GitHub*: authenticated as \`${user.login ?? "unknown"}\``);
-      } else {
-        results.push(`❌ *GitHub*: API returned HTTP ${res.status}`);
-      }
-    } catch (err) {
-      results.push(`❌ *GitHub*: ${err instanceof Error ? err.message : String(err)}`);
-    }
+  if (!githubToken) return "❌ *GitHub*: `GITHUB_TOKEN` not set";
+  try {
+    const res = await fetch("https://api.github.com/user", {
+      headers: { Authorization: `Bearer ${githubToken}`, "User-Agent": "Squirrel-Bot/1.0" },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!res.ok) return `❌ *GitHub*: API returned HTTP ${res.status}`;
+    const user = await res.json() as { login?: string };
+    return `✅ *GitHub*: authenticated as \`${user.login ?? "unknown"}\``;
+  } catch (err) {
+    return `❌ *GitHub*: ${errorMessage(err)}`;
   }
+}
 
-  // OpenRouter API key
+function checkOpenRouter(): string {
   const openRouterKey = process.env.OPENROUTER_API_KEY;
   const baseUrl = openRouterBaseUrl();
-  if (!openRouterKey) {
-    results.push("❌ *OpenRouter*: `OPENROUTER_API_KEY` not set");
-  } else if (!openRouterKey.startsWith("sk-or-")) {
-    results.push(`⚠️ *OpenRouter*: key set but format looks unexpected (\`${baseUrl}\`)`);
-  } else {
-    results.push(`✅ *OpenRouter*: key configured (\`${openRouterKey.slice(0, 12)}…\`) via \`${baseUrl}\``);
+  if (!openRouterKey) return "❌ *OpenRouter*: `OPENROUTER_API_KEY` not set";
+  if (!openRouterKey.startsWith("sk-or-")) {
+    return `⚠️ *OpenRouter*: key set but format looks unexpected (\`${baseUrl}\`)`;
   }
+  return `✅ *OpenRouter*: key configured via \`${baseUrl}\``;
+}
 
-  // URL fetcher / database
+async function checkUrlFetcher(urlStore: UrlStore): Promise<string> {
   try {
     const count = await urlStore.count();
-    results.push(`✅ *URL fetcher*: database reachable, ${count} URL${count === 1 ? "" : "s"} configured`);
+    return `✅ *URL fetcher*: database reachable, ${count} URL${count === 1 ? "" : "s"} configured`;
   } catch (err) {
-    results.push(`❌ *URL fetcher*: database error — ${err instanceof Error ? err.message : String(err)}`);
+    return `❌ *URL fetcher*: database error — ${errorMessage(err)}`;
   }
-
-  return `*Data source health check:*\n${results.join("\n")}`;
 }
 
 const PROMPT_TARGETS = ["system", "user"] as const;
@@ -353,11 +331,18 @@ async function handleChannelMessages(args: string[], configStore: ConfigStore): 
   return `${emoji} Channel message responses turned *${setting}*. ${detail}`;
 }
 
-async function checkGoogleDrive(creds: {
-  client_email: string;
-  private_key: string;
-  project_id: string;
-}): Promise<string> {
+async function checkGoogleDrive(): Promise<string> {
+  const googleCreds = process.env.GOOGLE_CREDENTIALS;
+  if (!googleCreds) return "❌ *Google Drive*: `GOOGLE_CREDENTIALS` not set";
+  let creds: { client_email: string; private_key: string; project_id: string };
+  try {
+    creds = JSON.parse(googleCreds);
+  } catch {
+    return "❌ *Google Drive*: `GOOGLE_CREDENTIALS` is not valid JSON";
+  }
+  const missing = ["client_email", "private_key", "project_id"].filter((f) => !creds?.[f as keyof typeof creds]);
+  if (missing.length > 0) return `❌ *Google Drive*: credentials JSON missing fields: ${missing.join(", ")}`;
+
   try {
     // Build a JWT to obtain an access token for the Drive API
     const now = Math.floor(Date.now() / 1000);
@@ -436,6 +421,6 @@ async function checkGoogleDrive(creds: {
 
     return lines.join("\n");
   } catch (err) {
-    return `❌ *Google Drive*: ${err instanceof Error ? err.message : String(err)}`;
+    return `❌ *Google Drive*: ${errorMessage(err)}`;
   }
 }

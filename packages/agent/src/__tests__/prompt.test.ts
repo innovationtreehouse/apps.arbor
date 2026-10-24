@@ -201,6 +201,13 @@ describe("buildPrompt", () => {
     expect(result).toContain("Recent channel activity:");
     expect(result).toContain("bg noise");
   });
+
+  it("inserts text containing $& and $1 literally", () => {
+    const history = [{ user: "U1", text: "cost is $& or $1" }, { user: "U1", text: "now" }];
+    const result = buildPrompt(history, "price $' and $`");
+    expect(result).toContain("cost is $& or $1");
+    expect(result).toContain("price $' and $`");
+  });
 });
 
 describe("defaultSystemPrompt version line", () => {
