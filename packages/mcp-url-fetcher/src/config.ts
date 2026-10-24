@@ -27,12 +27,18 @@ export class UrlConfig {
     }, this.pollIntervalMs);
   }
 
-  isAllowed(url: string): boolean {
-    if (this.urls.has(url)) return true;
-    for (const key of this.urls.keys()) {
-      if (key.endsWith("*") && url.startsWith(key.slice(0, -1))) return true;
+  // Exact entry first, then any "prefix*" wildcard entry.
+  private match(url: string): UrlEntry | undefined {
+    const exact = this.urls.get(url);
+    if (exact) return exact;
+    for (const [key, entry] of this.urls) {
+      if (key.endsWith("*") && url.startsWith(key.slice(0, -1))) return entry;
     }
-    return false;
+    return undefined;
+  }
+
+  isAllowed(url: string): boolean {
+    return this.match(url) !== undefined;
   }
 
   getAll(): UrlEntry[] {
@@ -40,10 +46,6 @@ export class UrlConfig {
   }
 
   getDescription(url: string): string {
-    if (this.urls.has(url)) return this.urls.get(url)!.description;
-    for (const [key, entry] of this.urls.entries()) {
-      if (key.endsWith("*") && url.startsWith(key.slice(0, -1))) return entry.description;
-    }
-    return "";
+    return this.match(url)?.description ?? "";
   }
 }

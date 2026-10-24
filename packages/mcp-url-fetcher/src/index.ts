@@ -43,6 +43,9 @@ export function listToolsHandler() {
   };
 }
 
+const ok = (text: string) => ({ content: [{ type: "text", text }] });
+const err = (text: string) => ({ isError: true, content: [{ type: "text", text }] });
+
 export async function callToolHandler(
   config: UrlConfig,
   name: string,
@@ -50,38 +53,16 @@ export async function callToolHandler(
 ) {
   if (name === "url_list") {
     const entries = config.getAll();
-    if (entries.length === 0) {
-      return {
-        content: [{ type: "text", text: "No URLs are currently configured." }],
-      };
-    }
+    if (entries.length === 0) return ok("No URLs are currently configured.");
     const lines = entries.map((e) => `- ${e.url}\n  ${e.description}`);
-    return {
-      content: [
-        { type: "text", text: "Configured URLs:\n" + lines.join("\n") },
-      ],
-    };
+    return ok("Configured URLs:\n" + lines.join("\n"));
   }
 
   if (name === "url_fetch") {
     const url = (args as Record<string, unknown>)?.url;
-    if (typeof url !== "string" || !url) {
-      return {
-        isError: true,
-        content: [{ type: "text", text: "Missing required parameter: url" }],
-      };
-    }
-
+    if (typeof url !== "string" || !url) return err("Missing required parameter: url");
     if (!config.isAllowed(url)) {
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text",
-            text: `URL not on allowlist: ${url}\nUse url_list to see available URLs.`,
-          },
-        ],
-      };
+      return err(`URL not on allowlist: ${url}\nUse url_list to see available URLs.`);
     }
 
     try {
@@ -89,30 +70,11 @@ export async function callToolHandler(
         headers: { "User-Agent": "Squirrel-Bot/1.0" },
         signal: AbortSignal.timeout(15_000),
       });
-
-      if (!response.ok) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `HTTP ${response.status} ${response.statusText} for ${url}`,
-            },
-          ],
-        };
-      }
+      if (!response.ok) return err(`HTTP ${response.status} ${response.statusText} for ${url}`);
 
       const contentType = response.headers.get("content-type") ?? "";
       if (!contentType.includes("text") && !contentType.includes("json")) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Unsupported content type: ${contentType}. Only text and JSON are supported.`,
-            },
-          ],
-        };
+        return err(`Unsupported content type: ${contentType}. Only text and JSON are supported.`);
       }
 
       let text = await response.text();
@@ -123,27 +85,13 @@ export async function callToolHandler(
       }
 
       const description = config.getDescription(url);
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Source: ${url}${description ? ` (${description})` : ""}\n\n${text}`,
-          },
-        ],
-      };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return {
-        isError: true,
-        content: [{ type: "text", text: `Fetch error: ${msg}` }],
-      };
+      return ok(`Source: ${url}${description ? ` (${description})` : ""}\n\n${text}`);
+    } catch (e: unknown) {
+      return err(`Fetch error: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
-  return {
-    isError: true,
-    content: [{ type: "text", text: `Unknown tool: ${name}` }],
-  };
+  return err(`Unknown tool: ${name}`);
 }
 
 /* v8 ignore start */
