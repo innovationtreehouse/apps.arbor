@@ -36,19 +36,11 @@ export async function runAgent(
   throw lastError ?? new Error("runAgent: no attempts made");
 }
 
+// Network blips, provider overload/rate limits and timeouts; anything else is a real failure.
+const TRANSIENT_ERROR = /econnreset|econnrefused|etimedout|eai_again|socket hang up|timed out|timeout|overloaded|rate_limit|server_error/;
+
 function isTransientError(err: Error): boolean {
-  const msg = err.message.toLowerCase();
-  return (
-    msg.includes("timeout") ||
-    msg.includes("timed out") ||
-    msg.includes("econnreset") ||
-    msg.includes("econnrefused") ||
-    msg.includes("socket") ||
-    msg.includes("network") ||
-    msg.includes("overloaded") ||
-    msg.includes("rate_limit") ||
-    msg.includes("server_error")
-  );
+  return TRANSIENT_ERROR.test(err.message.toLowerCase());
 }
 
 // Build a multi-modal prompt as an AsyncIterable<SDKUserMessage> when images

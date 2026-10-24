@@ -299,4 +299,25 @@ describe("runAgent", () => {
     await runAgent("prompt", "system");
     expect(vi.mocked(query).mock.calls[0][0].options?.allowedTools).toEqual(ALLOWED_TOOLS);
   });
+
+  it("does not retry errors that only mention sockets or networks", async () => {
+    vi.mocked(query).mockImplementation(async function* () {
+      throw new Error("network policy denied: socket not permitted");
+    });
+    await expect(runAgent("prompt", "system")).rejects.toThrow("network policy denied");
+    expect(vi.mocked(query)).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries rate limits and overload", async () => {
+    vi.useFakeTimers();
+    vi.mocked(query)
+      .mockImplementationOnce(async function* () { throw new Error("429 rate_limit_error"); })
+      .mockImplementationOnce(async function* () { throw new Error("529 overloaded_error"); })
+      .mockImplementation(async function* () { yield { result: "ok" }; });
+    const resultPromise = runAgent("prompt", "system");
+    await vi.runAllTimersAsync();
+    expect(await resultPromise).toBe("ok");
+    expect(vi.mocked(query)).toHaveBeenCalledTimes(3);
+    vi.useRealTimers();
+  });
 });
