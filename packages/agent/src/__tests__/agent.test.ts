@@ -365,7 +365,7 @@ describe("runAgent", () => {
     expect(vi.mocked(query).mock.calls[1][0].options?.maxTurns).toBe(30);
   });
 
-  it("falls back to the 300 s deadline when AGENT_TIMEOUT_S is not a positive number", async () => {
+  it("falls back to the 240 s deadline when AGENT_TIMEOUT_S is not a positive number", async () => {
     vi.useFakeTimers();
     process.env.AGENT_TIMEOUT_S = "abc";
     vi.mocked(query).mockImplementation(async function* ({ options }) {
@@ -374,8 +374,8 @@ describe("runAgent", () => {
     });
 
     const resultPromise = runAgent("prompt", "system");
-    const assertion = expect(resultPromise).rejects.toThrow("Agent timed out after 300s");
-    await vi.advanceTimersByTimeAsync(299_999);
+    const assertion = expect(resultPromise).rejects.toThrow("Agent timed out after 240s");
+    await vi.advanceTimersByTimeAsync(239_999);
     expect(vi.mocked(query)).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1);
     await assertion;

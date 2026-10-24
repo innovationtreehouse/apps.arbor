@@ -44,7 +44,7 @@ The agent container also runs the `mcp-url-fetcher` MCP server in-process, which
 | `THREAD_HISTORY_LIMIT` | No | `50` | Maximum number of prior Slack messages to include as thread context |
 | `URL_POLL_INTERVAL_S` | No | `60` | How often the URL Fetcher MCP server refreshes the allowlist from the database, in seconds |
 | `MAX_MCP_RETRIES` | No | `2` | Number of times to retry a failed `runAgent()` call before giving up; uses exponential backoff starting at 1s |
-| `AGENT_TIMEOUT_S` | No | `300` | Overall deadline in seconds for one `runAgent()` call, retries included; the query is aborted and the event fails when it passes |
+| `AGENT_TIMEOUT_S` | No | `240` | Overall deadline in seconds for one `runAgent()` call, retries included; the query is aborted and the event fails when it passes. Keep it below the SQS `VisibilityTimeout` (300) so a slow message is not redelivered |
 | `AGENT_MAX_TURNS` | No | `30` | Maximum agent turns (model responses) per query before the SDK stops it |
 
 ---

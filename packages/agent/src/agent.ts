@@ -18,7 +18,8 @@ export async function runAgent(
   images?: ImageContent[],
 ): Promise<string> {
   const maxRetries = parseInt(process.env.MAX_MCP_RETRIES ?? "2", 10);
-  const timeoutS = positiveIntEnv("AGENT_TIMEOUT_S", 300);
+  // Under the 300 s SQS visibility timeout, leaving room for the pre-agent Slack/DB steps.
+  const timeoutS = positiveIntEnv("AGENT_TIMEOUT_S", 240);
   // One deadline across all attempts, so a hung MCP server cannot stall the SQS loop.
   const abortController = new AbortController();
   const timer = setTimeout(() => abortController.abort(), timeoutS * 1000);
