@@ -12,25 +12,35 @@ export async function runAgent(
   images?: ImageContent[],
 ): Promise<string> {
   const maxRetries = parseInt(process.env.MAX_MCP_RETRIES ?? "2", 10);
-  const options = buildQueryOptions(systemPrompt, model, maxTokens);
+  const timeoutS = parseInt(process.env.AGENT_TIMEOUT_S ?? "300", 10);
+  // One deadline across all attempts, so a hung MCP server cannot stall the SQS loop.
+  const abortController = new AbortController();
+  const timer = setTimeout(() => abortController.abort(), timeoutS * 1000);
+  const options = buildQueryOptions(systemPrompt, model, maxTokens, abortController);
   let lastError: Error | undefined;
 
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    if (attempt > 0) {
-      const base = Math.min(1000 * 2 ** (attempt - 1), 10_000);
-      const delayMs = base * (1 + Math.random() * 0.1);
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      console.warn(
-        `[agent] attempt ${attempt}/${maxRetries + 1} failed (${lastError?.message}), retried after ${Math.round(delayMs)}ms`
-      );
-    }
+  try {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (attempt > 0) {
+        const base = Math.min(1000 * 2 ** (attempt - 1), 10_000);
+        const delayMs = base * (1 + Math.random() * 0.1);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        console.warn(
+          `[agent] attempt ${attempt}/${maxRetries + 1} failed (${lastError?.message}), retried after ${Math.round(delayMs)}ms`
+        );
+      }
 
-    try {
-      return await runAgentOnce(prompt, options, images);
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-      if (!isTransientError(lastError)) throw lastError;
+      try {
+        const result = await runAgentOnce(prompt, options, images);
+        if (!abortController.signal.aborted) return result;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (!abortController.signal.aborted && !isTransientError(lastError)) throw lastError;
+      }
+      if (abortController.signal.aborted) throw new Error(`Agent timed out after ${timeoutS}s`);
     }
+  } finally {
+    clearTimeout(timer);
   }
 
   throw lastError ?? new Error("runAgent: no attempts made");
@@ -134,6 +144,7 @@ function buildQueryOptions(
   systemPrompt: string,
   model: string | undefined,
   maxTokens: number | undefined,
+  abortController: AbortController,
 ): Options {
   return {
     model: resolveModel(model),
@@ -145,6 +156,8 @@ function buildQueryOptions(
     },
     allowedTools: ALLOWED_TOOLS,
     mcpServers: mcpServers(),
+    maxTurns: parseInt(process.env.AGENT_MAX_TURNS ?? "30", 10),
+    abortController,
   };
 }
 

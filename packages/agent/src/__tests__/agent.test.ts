@@ -301,6 +301,16 @@ describe("runAgent", () => {
     expect(vi.mocked(query).mock.calls[0][0].options?.allowedTools).toEqual(ALLOWED_TOOLS);
   });
 
+  it("sets maxTurns from AGENT_MAX_TURNS with a default of 30", async () => {
+    vi.mocked(query).mockImplementation(async function* () { yield { result: "ok" }; });
+    await runAgent("prompt", "system");
+    process.env.AGENT_MAX_TURNS = "5";
+    await runAgent("prompt", "system");
+    delete process.env.AGENT_MAX_TURNS;
+    expect(vi.mocked(query).mock.calls[0][0].options?.maxTurns).toBe(30);
+    expect(vi.mocked(query).mock.calls[1][0].options?.maxTurns).toBe(5);
+  });
+
   it("does not retry errors that only mention sockets or networks", async () => {
     vi.mocked(query).mockImplementation(async function* () {
       throw new Error("network policy denied: socket not permitted");
@@ -319,6 +329,28 @@ describe("runAgent", () => {
     await vi.runAllTimersAsync();
     expect(await resultPromise).toBe("ok");
     expect(vi.mocked(query)).toHaveBeenCalledTimes(3);
+    vi.useRealTimers();
+  });
+
+  // The SDK either throws an AbortError or ends the stream; both must surface as a timeout.
+  it.each([
+    ["throws", true],
+    ["ends the stream", false],
+  ])("aborts after AGENT_TIMEOUT_S without retrying when the SDK %s", async (_label, throws) => {
+    vi.useFakeTimers();
+    process.env.AGENT_TIMEOUT_S = "2";
+    vi.mocked(query).mockImplementation(async function* ({ options }) {
+      const signal = options!.abortController!.signal;
+      await new Promise((resolve) => signal.addEventListener("abort", resolve));
+      if (throws) throw new Error("Claude Code process aborted by user");
+    });
+
+    const resultPromise = runAgent("prompt", "system");
+    const assertion = expect(resultPromise).rejects.toThrow("Agent timed out after 2s");
+    await vi.advanceTimersByTimeAsync(2000);
+    await assertion;
+    expect(vi.mocked(query)).toHaveBeenCalledTimes(1);
+    delete process.env.AGENT_TIMEOUT_S;
     vi.useRealTimers();
   });
 });
