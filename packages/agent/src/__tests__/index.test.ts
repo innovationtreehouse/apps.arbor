@@ -47,6 +47,11 @@ vi.mock("../slack.js", () => ({
 
 vi.mock("../agent.js", () => ({
   runAgent: vi.fn().mockResolvedValue("Agent response"),
+  agentTimeoutS: () => 240,
+}));
+
+vi.mock("../retrieval/answer.js", () => ({
+  research: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../prompt.js", () => ({
@@ -63,6 +68,7 @@ const { fetchThreadHistory, fetchChannelHistory, fetchSlackImages, postMessage, 
 const { runAgent } = await import("../agent.js");
 const { buildPrompt, buildSystemPrompt } = await import("../prompt.js");
 const { processEvent, isAdminCommand, isSlackEvent } = await import("../index.js");
+const { research } = await import("../retrieval/answer.js");
 
 const baseEvent = {
   channel: "C_CHAN",
@@ -111,7 +117,7 @@ describe("processEvent", () => {
     expect(fetchThreadHistory).toHaveBeenCalledWith("C_CHAN", "1.0");
     expect(buildPrompt).toHaveBeenCalledWith(history, baseEvent.text, undefined, []);
     expect(buildSystemPrompt).toHaveBeenCalledWith(undefined, undefined, { requiresDiscretion: false });
-    expect(runAgent).toHaveBeenCalledWith("built prompt", "system prompt", undefined, undefined, []);
+    expect(runAgent).toHaveBeenCalledWith("built prompt", "system prompt", undefined, undefined, [], expect.any(AbortSignal));
     expect(postMessage).toHaveBeenCalledWith("C_CHAN", "1.0", "Here is your answer.");
   });
 
@@ -133,7 +139,7 @@ describe("processEvent", () => {
     await processEvent(baseEvent);
 
     expect(mockConfigStore.get).toHaveBeenCalledWith("model");
-    expect(runAgent).toHaveBeenCalledWith("built prompt", "system prompt", "claude-opus-4-6", undefined, []);
+    expect(runAgent).toHaveBeenCalledWith("built prompt", "system prompt", "claude-opus-4-6", undefined, [], expect.any(AbortSignal));
   });
 
   it("passes the agent response to postMessage", async () => {
@@ -220,6 +226,7 @@ describe("processEvent", () => {
       undefined,
       2048,
       [],
+      expect.any(AbortSignal),
     );
   });
 
@@ -237,6 +244,7 @@ describe("processEvent", () => {
       undefined,
       4096,
       [],
+      expect.any(AbortSignal),
     );
   });
 
@@ -255,6 +263,7 @@ describe("processEvent", () => {
       undefined,
       1024,
       [],
+      expect.any(AbortSignal),
     );
   });
 
@@ -269,6 +278,7 @@ describe("processEvent", () => {
       undefined,
       undefined,
       [],
+      expect.any(AbortSignal),
     );
   });
 
@@ -286,6 +296,7 @@ describe("processEvent", () => {
       undefined,
       undefined,
       [],
+      expect.any(AbortSignal),
     );
   });
 
@@ -303,6 +314,7 @@ describe("processEvent", () => {
       undefined,
       undefined,
       [],
+      expect.any(AbortSignal),
     );
   });
 
@@ -324,6 +336,7 @@ describe("processEvent", () => {
       undefined,
       undefined,
       imageData,
+      expect.any(AbortSignal),
     );
   });
 
@@ -341,6 +354,7 @@ describe("processEvent", () => {
       undefined,
       undefined,
       [],
+      expect.any(AbortSignal),
     );
   });
 });
@@ -358,7 +372,7 @@ describe("config fallback", () => {
 
     expect(errSpy).toHaveBeenCalledTimes(1);
     expect(errSpy.mock.calls[0][0]).toContain("model: Error: db down");
-    expect(runAgent).toHaveBeenCalledWith("built prompt", "system prompt", undefined, 4096, []);
+    expect(runAgent).toHaveBeenCalledWith("built prompt", "system prompt", undefined, 4096, [], expect.any(AbortSignal));
     errSpy.mockRestore();
   });
 });
@@ -382,5 +396,42 @@ describe("SQS message guards", () => {
     expect(isSlackEvent({ text: "hi" })).toBe(false);
     expect(isSlackEvent("str")).toBe(false);
     expect(isSlackEvent(null)).toBe(false);
+  });
+});
+
+describe("processEvent research pre-pass", () => {
+  it("appends research evidence to the prompt, passes the stage models, and logs usage", async () => {
+    vi.mocked(mockConfigStore.get).mockImplementation(async (key: string) =>
+      ({ "model:fetch": "google/flash", "model:decide": "google/decide" } as Record<string, string>)[key]);
+    vi.mocked(research).mockResolvedValueOnce({
+      context: "\n---evidence---",
+      usage: { fetch: { calls: 2, prompt_tokens: 1, completion_tokens: 1, cost: 0 }, decide: { calls: 1, prompt_tokens: 1, completion_tokens: 1, cost: 0 } },
+      status: { github: "ok, 1 result" },
+    });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(runAgent).mockResolvedValueOnce("answer");
+    await processEvent(baseEvent);
+    expect(research).toHaveBeenCalledWith(baseEvent.text, expect.objectContaining({
+      fetchModel: "google/flash", decideModel: "google/decide", signal: expect.any(AbortSignal) }));
+    expect(vi.mocked(runAgent).mock.calls[0][5]).toBe(vi.mocked(research).mock.calls.at(-1)?.[1].signal);
+    expect(vi.mocked(runAgent).mock.calls[0][0]).toBe("built prompt\n---evidence---");
+    expect(log.mock.calls.some(([line]) => String(line).startsWith("[usage] ") && String(line).includes('"calls":2'))).toBe(true);
+    log.mockRestore();
+  });
+
+  it("answers without evidence when research throws", async () => {
+    vi.mocked(research).mockRejectedValueOnce(new Error("boom"));
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(runAgent).mockResolvedValueOnce("answer");
+    await processEvent(baseEvent);
+    expect(vi.mocked(runAgent).mock.calls[0][0]).toBe("built prompt");
+    error.mockRestore();
+  });
+
+  it("skips research for discretion events", async () => {
+    vi.mocked(research).mockClear();
+    vi.mocked(runAgent).mockResolvedValueOnce("__NO_REPLY__");
+    await processEvent({ ...baseEvent, requires_discretion: true });
+    expect(research).not.toHaveBeenCalled();
   });
 });

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { UrlStore, UrlEntry } from "@arbor/db";
-import { UrlConfig } from "../config.js";
+import { UrlConfig, prefixMatches } from "../config.js";
 
 const ENABLED_ITEM: UrlEntry = {
   url: "https://docs.example.com",
@@ -158,5 +158,32 @@ describe("UrlConfig.startPolling", () => {
 
     vi.useRealTimers();
     delete process.env.URL_POLL_INTERVAL_S;
+  });
+});
+
+describe("prefixMatches", () => {
+  it.each([
+    ["https://example.com", "https://example.com/", true],
+    ["https://example.com", "https://example.com/a/b?c=1", true],
+    ["https://example.com", "https://example.com.evil.com/", false],
+    ["https://example.com", "https://example.com@evil.com/", false],
+    ["https://example.com", "http://example.com/", false],
+    ["https://example.com/docs", "https://example.com/docs", true],
+    ["https://example.com/docs", "https://example.com/docs/page", true],
+    ["https://example.com/docs", "https://example.com/docs?x=1", true],
+    ["https://example.com/docs", "https://example.com/docs-evil", false],
+    ["https://example.com/docs/", "https://example.com/docs/page", true],
+    ["https://example.com/docs/", "https://example.com/docsx", false],
+    ["not a url", "https://example.com/", false],
+  ])("%s* vs %s -> %s", (prefix, url, expected) => {
+    expect(prefixMatches(prefix, url)).toBe(expected);
+  });
+
+  it("is what isAllowed uses for wildcard entries", async () => {
+    const store = makeStore({ listEnabled: vi.fn().mockResolvedValue([{ ...WILDCARD_ITEM, url: "https://example.com*" }]) });
+    const config = new UrlConfig(store);
+    await config.load();
+    expect(config.isAllowed("https://example.com/page")).toBe(true);
+    expect(config.isAllowed("https://example.com.evil.com/")).toBe(false);
   });
 });

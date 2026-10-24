@@ -232,6 +232,16 @@ describe("model", () => {
     expect(text).toContain("default");
   });
 
+  it("shows and sets the research-stage models under model:fetch and model:decide", async () => {
+    vi.mocked(mockConfigStore.get).mockResolvedValueOnce(undefined);
+    expect(await runCommand("model", ["fetch"])).toContain("*Active fetch model:* `google/gemini-3.5-flash-lite (default)`");
+    expect(mockConfigStore.get).toHaveBeenCalledWith("model:fetch");
+    expect(await runCommand("model", ["decide", "google/gemini-3.8-flash"])).toContain("Decide model set to");
+    expect(mockConfigStore.set).toHaveBeenCalledWith("model:decide", "google/gemini-3.8-flash");
+    vi.mocked(mockConfigStore.get).mockResolvedValueOnce("flash");
+    expect(await runCommand("model", ["decide"])).toContain("model decide google/gemini-3.8-flash");
+  });
+
   it("sets model when argument provided", async () => {
     const text = await runCommand("model", ["anthropic/claude-haiku-4.5"]);
     expect(text).toContain("anthropic/claude-haiku-4.5");
@@ -459,6 +469,45 @@ describe("check", () => {
     expect(text).toContain("3 URLs");
     expect(text).toContain("✅ *OpenRouter*: key configured via");
     expect(text).not.toContain("sk-or-");
+  });
+
+  it("reports repos visible per GitHub org", async () => {
+    process.env.GITHUB_TOKEN = "ghp_test";
+    vi.mocked(mockUrlStore.count).mockResolvedValueOnce(0);
+    mockFetch.mockImplementation(makeCheckFetch({
+      "https://api.github.com/user": async () => ({ ok: true, json: async () => ({ login: "jeff" }) }),
+      "https://api.github.com/search/repositories?q=org:innovationtreehouse&per_page=1": async () => ({ ok: true, json: async () => ({ total_count: 7 }) }),
+      "https://api.github.com/search/repositories?q=org:frc9577&per_page=1": async () => ({ ok: false, status: 403 }),
+    }));
+    const text = await runCommand("check");
+    expect(text).toContain("✅ `innovationtreehouse`: 7 repos visible");
+    expect(text).toContain("❌ `frc9577`: search failed (HTTP 403)");
+    expect(text).not.toContain("ghp_test");
+  });
+
+  it("probes every research source and reports pass, fail and not configured without secrets", async () => {
+    process.env.SLACK_USER_TOKEN = "xoxp-secret";
+    vi.mocked(mockUrlStore.count).mockResolvedValueOnce(0);
+    vi.mocked(mockUrlStore.listEnabled).mockResolvedValueOnce([
+      { url: "https://www.firstinspires.org/*", description: "FIRST", enabled: true, added_by: "seed", added_at: "" },
+    ]);
+    const json = (body: unknown) => async () => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+    mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.startsWith("https://www.firstinspires.org/")) return new Response("<title>FIRST</title>", { headers: { "content-type": "text/html" } });
+      if (url.startsWith("https://www.chiefdelphi.com/search.json")) return json({ topics: [] })();
+      if (url.startsWith("https://slack.com/api/search.messages")) return json({ ok: false, error: "missing_scope" })();
+      return makeCheckFetch()(url, init);
+    });
+    const text = await runCommand("check");
+    delete process.env.SLACK_USER_TOKEN;
+    expect(text).toContain("*Research sources:*");
+    expect(text).toContain("✅ *FIRST and allowlisted sites*: 1 result");
+    expect(text).toContain("✅ *Chief Delphi*: 0 results");
+    expect(text).toContain("⚪ *The Blue Alliance*: not configured (TBA_AUTH_KEY not set)");
+    expect(text).toContain("⚪ *Google Drive*: not configured");
+    expect(text).toContain("❌ *Slack*: Slack search.messages: missing_scope");
+    expect(text).toContain("❌ *Programs wiki*");
+    expect(text).not.toContain("xoxp-secret");
   });
 
   it("reports DB error in URL fetcher check", async () => {

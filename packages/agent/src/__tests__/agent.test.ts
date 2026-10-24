@@ -7,6 +7,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 
 const { query } = await import("@anthropic-ai/claude-agent-sdk");
 const { runAgent, ALLOWED_TOOLS } = await import("../agent.js");
+const { resetDriveStatus } = await import("../retrieval/sources/drive.js");
 
 
 process.env.AWS_REGION = "us-east-1";
@@ -16,6 +17,9 @@ const savedKey = process.env.OPENROUTER_API_KEY;
 const savedBase = process.env.OPENROUTER_BASE_URL;
 beforeEach(() => {
   vi.mocked(query).mockReset();
+  vi.unstubAllGlobals();
+  delete process.env.GDRIVE_MCP_PROXY_URL;
+  resetDriveStatus();
   process.env.OPENROUTER_API_KEY = "sk-or-test";
   delete process.env.OPENROUTER_BASE_URL;
 });
@@ -73,7 +77,7 @@ describe("runAgent", () => {
 
     const callArgs = vi.mocked(query).mock.calls[0][0];
     expect(callArgs.prompt).toBe("test prompt");
-    expect(callArgs.options?.systemPrompt).toBe("test system");
+    expect(callArgs.options?.systemPrompt).toMatch(/^test system\n\nGoogle Drive is not configured/);
     expect(callArgs.options?.model).toBe("anthropic/claude-opus-4.6");
     delete process.env.MODEL;
   });
@@ -118,13 +122,61 @@ describe("runAgent", () => {
     );
     process.env.GDRIVE_MCP_PROXY_URL = "http://127.0.0.1:8123/mcp";
     process.env.GITHUB_TOKEN = "ghp_test";
+    const health = vi.fn().mockResolvedValue(new Response("ok"));
+    vi.stubGlobal("fetch", health);
 
     await runAgent("prompt", "system");
 
-    const { mcpServers } = vi.mocked(query).mock.calls[0][0].options ?? {};
+    expect(String(health.mock.calls[0][0])).toBe("http://127.0.0.1:8123/health");
+    const { mcpServers, systemPrompt } = vi.mocked(query).mock.calls[0][0].options ?? {};
     expect(mcpServers).toHaveProperty("gdrive");
     expect(mcpServers).toHaveProperty("github");
     expect(mcpServers).toHaveProperty("urlFetcher");
+    expect(systemPrompt).toBe("system");
+  });
+
+  it("drops the gdrive server and tells the model when the proxy is unhealthy", async () => {
+    vi.mocked(query).mockReturnValue((async function* () { yield { result: "ok" }; })());
+    process.env.GDRIVE_MCP_PROXY_URL = "http://127.0.0.1:8123/mcp";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("starting", { status: 503 })));
+
+    await runAgent("prompt", "system");
+
+    const { mcpServers, systemPrompt } = vi.mocked(query).mock.calls[0][0].options ?? {};
+    expect(mcpServers).not.toHaveProperty("gdrive");
+    expect(systemPrompt).toContain("Google Drive is temporarily unavailable");
+  });
+
+  it("treats a proxy that refuses connections as unavailable and caches the answer", async () => {
+    vi.mocked(query).mockImplementation(async function* () { yield { result: "ok" }; });
+    process.env.GDRIVE_MCP_PROXY_URL = "http://127.0.0.1:8123/mcp";
+    const health = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
+    vi.stubGlobal("fetch", health);
+
+    await runAgent("prompt", "system");
+    await runAgent("prompt", "system");
+
+    expect(health).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(query).mock.calls[1][0].options?.mcpServers).not.toHaveProperty("gdrive");
+  });
+
+  it("stops when the caller's deadline (shared with research) has already passed", async () => {
+    vi.mocked(query).mockImplementation(async function* () { yield { result: "late" }; });
+    await expect(runAgent("prompt", "system", undefined, undefined, [], AbortSignal.abort())).rejects.toThrow("timed out");
+  });
+
+  it("offers no GitHub write tools", () => {
+    expect(ALLOWED_TOOLS.filter((t) => /^mcp__github__(create|add|update|merge|push|fork)_/.test(t))).toEqual([]);
+  });
+
+  it("logs answer-stage usage from the result message", async () => {
+    vi.mocked(query).mockReturnValue((async function* () {
+      yield { type: "result", result: "ok", total_cost_usd: 0.12, usage: { input_tokens: 5 } };
+    })());
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await runAgent("prompt", "system");
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('[usage] {"stage":"answer","cost":0.12'));
+    log.mockRestore();
   });
 
   it("passes model argument to query, taking priority over MODEL env var", async () => {

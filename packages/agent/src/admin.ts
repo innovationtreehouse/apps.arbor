@@ -1,6 +1,11 @@
 import type { UrlStore, ConfigStore, AuditStore, AuditRecord } from "@arbor/db";
 import { buildSystemPrompt, defaultSystemPrompt, DEFAULT_USER_PROMPT_TEMPLATE } from "./prompt.js";
-import { DEFAULT_MODEL, openRouterBaseUrl } from "./provider.js";
+import { DEFAULT_DECIDE_MODEL, DEFAULT_FETCH_MODEL, DEFAULT_MODEL, openRouterBaseUrl } from "./provider.js";
+import { UrlConfig } from "@arbor/mcp-url-fetcher";
+import { SOURCES } from "./retrieval/fetch.js";
+import { makePlan } from "./retrieval/plan.js";
+import { GITHUB_ORGS } from "./retrieval/sources/github.js";
+import { NotConfigured, errorMessage } from "./retrieval/sources/http.js";
 
 export interface AdminCommand {
   type: "admin_command";
@@ -17,10 +22,6 @@ interface Stores {
 }
 
 const MAX_URL_COUNT = parseInt(process.env.MAX_URL_COUNT ?? "100", 10);
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 export async function processAdminCommand(cmd: AdminCommand, stores: Stores): Promise<void> {
   const { subcommand, args, userId, responseUrl } = cmd;
@@ -135,19 +136,28 @@ async function handleTest(args: string[]): Promise<string> {
   }
 }
 
+// `model [id]` is the main model; `model fetch|decide [id]` are the research-stage models.
 async function handleModel(args: string[], configStore: ConfigStore): Promise<string> {
-  if (args.length === 0) {
-    const current = await configStore.get("model");
-    const display = current ?? `${process.env.MODEL ?? DEFAULT_MODEL} (default)`;
+  const stage = args[0] === "fetch" || args[0] === "decide" ? args[0] : undefined;
+  const key = stage ? `model:${stage}` : "model";
+  const label = stage ? `${stage} model` : "model";
+  const id = stage ? args[1] : args[0];
+  if (id === undefined) {
+    const builtIn = stage === "fetch" ? DEFAULT_FETCH_MODEL : stage === "decide" ? DEFAULT_DECIDE_MODEL : DEFAULT_MODEL;
+    const envValue = stage === "fetch" ? process.env.ARBOR_MODEL_FETCH
+      : stage === "decide" ? process.env.ARBOR_MODEL_DECIDE : process.env.MODEL;
+    const fallback = envValue ?? builtIn;
+    const current = await configStore.get(key);
+    const display = current ?? `${fallback} (default)`;
     // Pre-OpenRouter values (e.g. "claude-opus-4-6") lack the provider prefix and will fail.
-    const warn = display.includes("/") ? "" : "\n⚠️ Not an OpenRouter model ID (expected `provider/model`). Run `/squirrel-admin model anthropic/claude-opus-4.6`.";
-    return `*Active model:* \`${display}\`${warn}`;
+    const warn = display.includes("/") ? "" : `\n⚠️ Not an OpenRouter model ID (expected \`provider/model\`). Run \`/squirrel-admin model ${stage ? `${stage} ` : ""}${builtIn}\`.`;
+    return `*Active ${label}:* \`${display}\`${warn}`;
   }
-  if (!args[0].includes("/")) {
-    return `❌ \`${args[0]}\` is not an OpenRouter model ID. Use \`provider/model\`, e.g. \`${DEFAULT_MODEL}\`.`;
+  if (!id.includes("/")) {
+    return `❌ \`${id}\` is not an OpenRouter model ID. Use \`provider/model\`, e.g. \`${DEFAULT_MODEL}\`.`;
   }
-  await configStore.set("model", args[0]);
-  return `✅ Model set to \`${args[0]}\`. Takes effect on the next message.`;
+  await configStore.set(key, id);
+  return `✅ ${label[0].toUpperCase()}${label.slice(1)} set to \`${id}\`. Takes effect on the next message.`;
 }
 
 function auditLine(r: AuditRecord, where = ""): string {
@@ -194,7 +204,24 @@ async function handleTokenLimit(args: string[], configStore: ConfigStore): Promi
 
 async function handleCheck(urlStore: UrlStore): Promise<string> {
   const results = await Promise.all([checkGoogleDrive(), checkGitHub(), checkOpenRouter(), checkUrlFetcher(urlStore)]);
-  return `*Data source health check:*\n${results.join("\n")}`;
+  const research = await checkResearchSources(urlStore);
+  return `*Data source health check:*\n${results.join("\n")}\n\n*Research sources:*\n${research.join("\n")}`;
+}
+
+// Run each research source with a fixed question, through the same code a real message uses.
+// The programs wiki may take ~90 s here if it is waking up.
+async function checkResearchSources(urlStore: UrlStore): Promise<string[]> {
+  const urls = new UrlConfig(urlStore);
+  await urls.load().catch(() => undefined); // a DB error is already reported by checkUrlFetcher
+  const plan = { ...makePlan("FRC team 9577 swerve drive 2026"), urls: ["https://www.firstinspires.org/"] };
+  return Promise.all(Object.values(SOURCES).map(async ({ label, run }) => {
+    try {
+      const { docs, note } = await run(plan, { urls });
+      return `✅ *${label}*: ${docs.length} result${docs.length === 1 ? "" : "s"}${note ? ` (${note})` : ""}`;
+    } catch (err) {
+      return err instanceof NotConfigured ? `⚪ *${label}*: not configured (${err.message})` : `❌ *${label}*: ${errorMessage(err)}`;
+    }
+  }));
 }
 
 async function checkGitHub(): Promise<string> {
@@ -207,7 +234,16 @@ async function checkGitHub(): Promise<string> {
     });
     if (!res.ok) return `❌ *GitHub*: API returned HTTP ${res.status}`;
     const user = await res.json() as { login?: string };
-    return `✅ *GitHub*: authenticated as \`${user.login ?? "unknown"}\``;
+    // Repos the token can see per org (includes private repos only if the token covers them).
+    const orgs = await Promise.all(GITHUB_ORGS.map(async (org) => {
+      const r = await fetch(`https://api.github.com/search/repositories?q=org:${org}&per_page=1`, {
+        headers: { Authorization: `Bearer ${githubToken}`, "User-Agent": "Squirrel-Bot/1.0" },
+        signal: AbortSignal.timeout(8_000),
+      }).catch(() => undefined);
+      const count = r?.ok ? (await r.json() as { total_count?: number }).total_count : undefined;
+      return count === undefined ? `  • ❌ \`${org}\`: search failed${r ? ` (HTTP ${r.status})` : ""}` : `  • ✅ \`${org}\`: ${count} repos visible`;
+    }));
+    return [`✅ *GitHub*: authenticated as \`${user.login ?? "unknown"}\` (read-only tools)`, ...orgs].join("\n");
   } catch (err) {
     return `❌ *GitHub*: ${errorMessage(err)}`;
   }

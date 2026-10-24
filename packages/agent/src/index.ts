@@ -8,11 +8,12 @@ import type { ConfigStore } from "@arbor/db";
 import { createAuditLogger } from "@arbor/logger";
 import { fetchChannelHistory, fetchThreadHistory, fetchSlackImages, postMessage, postEphemeral } from "./slack.js";
 import type { SlackFile } from "./slack.js";
-import { runAgent } from "./agent.js";
+import { agentTimeoutS, runAgent } from "./agent.js";
 import { buildPrompt, buildSystemPrompt, NO_REPLY_SENTINEL } from "./prompt.js";
 import { BatchBuffer, type BatchEvent } from "./batch-buffer.js";
 import { processAdminCommand, type AdminCommand } from "./admin.js";
 import { providerEnv } from "./provider.js";
+import { research } from "./retrieval/answer.js";
 
 export type SlackEvent = BatchEvent & {
   holdoff?: boolean;
@@ -51,11 +52,12 @@ export function isSlackEvent(m: unknown): m is SlackEvent {
 
 // A failed config read falls back to defaults so the user still gets a reply.
 async function resolveConfig(store: ConfigStore, channel: string) {
-  const keys = ["model", `token_limit:${channel}`, "token_limit:default", "prompt:system", "prompt:user"];
+  const keys = ["model", `token_limit:${channel}`, "token_limit:default", "prompt:system", "prompt:user",
+    "model:fetch", "model:decide"];
   const results = await Promise.allSettled(keys.map((key) => store.get(key)));
   const failed = results.flatMap((r, i) => (r.status === "rejected" ? [`${keys[i]}: ${r.reason}`] : []));
   if (failed.length > 0) console.error(`[agent] config read failed, using defaults: ${failed.join("; ")}`);
-  const [model, channelLimit, defaultLimit, systemOverride, userTemplate] =
+  const [model, channelLimit, defaultLimit, systemOverride, userTemplate, fetchModel, decideModel] =
     results.map((r) => (r.status === "fulfilled" ? r.value : undefined));
   const limit = parseInt(channelLimit ?? defaultLimit ?? "", 10);
   return {
@@ -63,6 +65,8 @@ async function resolveConfig(store: ConfigStore, channel: string) {
     maxTokens: limit > 0 ? limit : undefined,
     systemOverride: systemOverride || undefined,
     userTemplate: userTemplate || undefined,
+    fetchModel,
+    decideModel,
   };
 }
 
@@ -74,7 +78,8 @@ export async function processEvent(event: SlackEvent): Promise<void> {
     await postEphemeral(event.channel, event.user, "_Searching…_");
   }
 
-  const { model, maxTokens, systemOverride, userTemplate } = await resolveConfig(configStore, event.channel);
+  const { model, maxTokens, systemOverride, userTemplate, fetchModel, decideModel } =
+    await resolveConfig(configStore, event.channel);
 
   // Fetch conversation history based on context type:
   // - thread: full thread + up to THREAD_CHANNEL_CONTEXT recent channel messages
@@ -84,7 +89,18 @@ export async function processEvent(event: SlackEvent): Promise<void> {
     ? await fetchChannelHistory(event.channel, THREAD_CHANNEL_CONTEXT).catch(() => [])
     : [];
 
-  const prompt = buildPrompt(history, event.text, userTemplate, channelContext);
+  // One AGENT_TIMEOUT_S deadline covers the research pre-pass and the agent together.
+  // Discretion events may get no reply at all, so they skip the paid pre-pass.
+  const deadline = AbortSignal.timeout(agentTimeoutS() * 1000);
+  const evidence = event.requires_discretion ? undefined
+    : await research(event.text, { urlStore, fetchModel, decideModel, signal: deadline }).catch((err) => {
+      console.error("[research] failed, answering without evidence:", err);
+      return undefined;
+    });
+  if (evidence) {
+    console.log(`[usage] ${JSON.stringify({ channel: event.channel, thread_ts: event.thread_ts, ...evidence.usage, sources: evidence.status })}`);
+  }
+  const prompt = buildPrompt(history, event.text, userTemplate, channelContext) + (evidence?.context ?? "");
   const systemPrompt = buildSystemPrompt(
     systemOverride,
     userTemplate,
@@ -96,7 +112,7 @@ export async function processEvent(event: SlackEvent): Promise<void> {
     : [];
 
   const start = Date.now();
-  const response = await runAgent(prompt, systemPrompt, model, maxTokens, images);
+  const response = await runAgent(prompt, systemPrompt, model, maxTokens, images, deadline);
   const duration_ms = Date.now() - start;
 
   if (response.trim() === NO_REPLY_SENTINEL) {
