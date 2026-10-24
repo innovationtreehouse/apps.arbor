@@ -6,13 +6,12 @@ import {
   RunTaskCommand,
 } from "@aws-sdk/client-ecs";
 import type { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ChannelRateLimiter } from "./rate-limiter.js";
-import { PostgresConfigStore } from "@arbor/db";
+import { recordAndCheck } from "./rate-limiter.js";
+import { createStores } from "@arbor/db";
 
 const sqsClient = new SQSClient({});
 const ecsClient = new ECSClient({});
-const configStore = new PostgresConfigStore(process.env.DATABASE_URL!);
-const rateLimiter = new ChannelRateLimiter(configStore);
+const { configStore } = createStores(process.env.DATABASE_URL!);
 const AGENT_NAME = process.env.AGENT_NAME ?? "Squirrel";
 declare const __GIT_SHA__: string | undefined;
 declare const __BUILD_TIME__: string | undefined;
@@ -149,7 +148,7 @@ async function handleEvent(rawBody: string) {
   });
 
   const channel = ev.channel as string;
-  const holdoff = await rateLimiter.recordAndCheck(channel);
+  const holdoff = await recordAndCheck(configStore, channel);
 
   // is_mention: agent must always reply, no discretion
   // requires_discretion: agent applies judgment about whether to reply

@@ -33,23 +33,17 @@ const mockAuditStore: AuditStore = {
 };
 
 vi.mock("@arbor/db", () => ({
-  PostgresUrlStore: vi.fn().mockImplementation(function () {
-    return mockStore;
-  }),
-  PostgresConfigStore: vi.fn().mockImplementation(function () {
-    return mockConfigStore;
-  }),
-  PostgresAuditStore: vi.fn().mockImplementation(function () {
-    return mockAuditStore;
-  }),
+  createStores: vi.fn(() => ({
+    urlStore: mockStore,
+    configStore: mockConfigStore,
+    auditStore: mockAuditStore,
+  })),
 }));
 
-// Mock ChannelRateLimiter so tests control holdoff behaviour
+// Mock the rate limiter so tests control holdoff behaviour
 const mockRecordAndCheck = vi.fn().mockResolvedValue(false);
 vi.mock("../rate-limiter.js", () => ({
-  ChannelRateLimiter: vi.fn().mockImplementation(function () {
-    return { recordAndCheck: mockRecordAndCheck };
-  }),
+  recordAndCheck: mockRecordAndCheck,
 }));
 
 const { handler } = await import("../index.js");
@@ -523,6 +517,6 @@ describe("rate limiting", () => {
 
   it("calls recordAndCheck with the correct channel", async () => {
     await handler(makeEvent({ body: mentionBody("C_SPECIAL") }), {} as any, {} as any);
-    expect(mockRecordAndCheck).toHaveBeenCalledWith("C_SPECIAL");
+    expect(mockRecordAndCheck).toHaveBeenCalledWith(mockConfigStore, "C_SPECIAL");
   });
 });
