@@ -43,6 +43,23 @@ export function listToolsHandler() {
   };
 }
 
+// Hostname check only (no DNS): a public name that resolves to a private address still passes.
+export function isPrivateHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (h === "localhost" || /\.(localhost|local|internal)$/.test(h)) return true;
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(h)) return /^(127|10|0|192\.168|169\.254|172\.(1[6-9]|2\d|3[01]))\./.test(h);
+  // IPv6 loopback/unspecified, fc00::/7 unique-local, fe80::/10 link-local, IPv4-mapped.
+  return h.includes(":") && (h === "::1" || h === "::" || /^(f[cd]|fe[89ab])[0-9a-f]*:/.test(h) || h.startsWith("::ffff:"));
+}
+
+async function fetchPublic(url: string): Promise<Response> {
+  if (isPrivateHost(new URL(url).hostname)) throw new Error(`refusing private or local host: ${url}`);
+  return fetch(url, {
+    headers: { "User-Agent": "Squirrel-Bot/1.0" },
+    signal: AbortSignal.timeout(15_000),
+  });
+}
+
 const ok = (text: string) => ({ content: [{ type: "text", text }] });
 const err = (text: string) => ({ isError: true, content: [{ type: "text", text }] });
 
@@ -66,10 +83,7 @@ export async function callToolHandler(
     }
 
     try {
-      const response = await fetch(url, {
-        headers: { "User-Agent": "Squirrel-Bot/1.0" },
-        signal: AbortSignal.timeout(15_000),
-      });
+      const response = await fetchPublic(url);
       if (!response.ok) return err(`HTTP ${response.status} ${response.statusText} for ${url}`);
 
       const contentType = response.headers.get("content-type") ?? "";

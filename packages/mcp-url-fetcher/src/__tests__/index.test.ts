@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { callToolHandler, listToolsHandler } from "../index.js";
+import { callToolHandler, isPrivateHost, listToolsHandler } from "../index.js";
 import { UrlConfig } from "../config.js";
 
 // Mock UrlConfig so we control allowlist contents without DynamoDB
@@ -210,5 +210,39 @@ describe("callToolHandler: unknown tool", () => {
     const result = await callToolHandler(config, "nonexistent_tool", {});
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("Unknown tool");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// private / local hosts
+// ---------------------------------------------------------------------------
+
+describe("isPrivateHost", () => {
+  it.each([
+    "localhost", "LOCALHOST", "foo.localhost", "127.0.0.1", "10.1.2.3", "192.168.0.1",
+    "172.16.0.1", "172.31.255.255", "169.254.169.254", "0.0.0.0", "[::1]", "::1",
+    "[fc00::1]", "[fd12:3456::1]", "[fe80::1]", "[::ffff:7f00:1]", "printer.local", "db.internal",
+    "host.internal.",
+  ])("refuses %s", (host) => {
+    expect(isPrivateHost(host)).toBe(true);
+  });
+
+  it.each(["docs.example.com", "172.32.0.1", "172.15.0.1", "11.0.0.1", "192.169.0.1", "internal.example.com", "10.example.com", "[2606:4700::1111]"])(
+    "allows %s",
+    (host) => {
+      expect(isPrivateHost(host)).toBe(false);
+    }
+  );
+
+  it("url_fetch refuses an allowlisted URL on a private host without fetching", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.mocked(config.isAllowed).mockReturnValueOnce(true);
+
+    const result = await callToolHandler(config, "url_fetch", { url: "https://169.254.169.254/latest/meta-data" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("refusing private or local host");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
