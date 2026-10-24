@@ -129,6 +129,7 @@ function mcpServers(): Options["mcpServers"] {
   };
 }
 
+// The SDK has no maxTokens option; the CLI caps each response via CLAUDE_CODE_MAX_OUTPUT_TOKENS.
 function buildQueryOptions(
   systemPrompt: string,
   model: string | undefined,
@@ -137,9 +138,12 @@ function buildQueryOptions(
   return {
     model: resolveModel(model),
     systemPrompt,
-    env: { ...process.env, ...providerEnv() },
+    env: {
+      ...process.env,
+      ...providerEnv(),
+      ...(maxTokens !== undefined ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxTokens) } : {}),
+    },
     allowedTools: ALLOWED_TOOLS,
-    ...(maxTokens !== undefined ? { maxTokens } : {}),
     mcpServers: mcpServers(),
   };
 }

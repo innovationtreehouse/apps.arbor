@@ -253,7 +253,7 @@ describe("runAgent", () => {
     vi.useRealTimers();
   });
 
-  it("passes maxTokens to query options when provided", async () => {
+  it("caps output tokens via CLAUDE_CODE_MAX_OUTPUT_TOKENS when maxTokens is provided", async () => {
     vi.mocked(query).mockReturnValue(
       (async function* () {
         yield { result: "ok" };
@@ -262,11 +262,12 @@ describe("runAgent", () => {
 
     await runAgent("prompt", "system", undefined, 2048);
 
-    const callArgs = vi.mocked(query).mock.calls[0][0];
-    expect(callArgs.options?.maxTokens).toBe(2048);
+    const options = vi.mocked(query).mock.calls[0][0].options;
+    expect(options?.env?.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe("2048");
+    expect(options).not.toHaveProperty("maxTokens");
   });
 
-  it("omits maxTokens from query options when not provided", async () => {
+  it("leaves CLAUDE_CODE_MAX_OUTPUT_TOKENS unset when maxTokens is not provided", async () => {
     vi.mocked(query).mockReturnValue(
       (async function* () {
         yield { result: "ok" };
@@ -275,8 +276,8 @@ describe("runAgent", () => {
 
     await runAgent("prompt", "system");
 
-    const callArgs = vi.mocked(query).mock.calls[0][0];
-    expect(callArgs.options).not.toHaveProperty("maxTokens");
+    const options = vi.mocked(query).mock.calls[0][0].options;
+    expect(options?.env).not.toHaveProperty("CLAUDE_CODE_MAX_OUTPUT_TOKENS");
   });
 
   it("passes DATABASE_URL to urlFetcher MCP env", async () => {
