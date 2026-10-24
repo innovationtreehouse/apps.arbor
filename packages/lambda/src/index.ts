@@ -88,7 +88,13 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 // ---------------------------------------------------------------------------
 
 async function handleEvent(rawBody: string) {
-  const body = JSON.parse(rawBody);
+  let body;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    console.warn("dropping /slack/events request with a malformed JSON body");
+    return { statusCode: 400, body: "Bad request" };
+  }
   const ev = body.event;
   console.log("event type:", body.type, "event subtype:", ev?.type, "channel_type:", ev?.channel_type, "bot_id:", ev?.bot_id);
 

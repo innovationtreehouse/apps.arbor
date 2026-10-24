@@ -173,6 +173,12 @@ describe("/slack/events", () => {
     expect(JSON.parse(res?.body ?? "")).toEqual({ challenge: "abc123" });
   });
 
+  it("returns 400 for a malformed JSON body without enqueueing", async () => {
+    const res = await handler(makeEvent({ body: "{not json" }), {} as any, {} as any);
+    expect(res?.statusCode).toBe(400);
+    expect(sqsMock.calls()).toHaveLength(0);
+  });
+
   it("ignores non-message event types", async () => {
     const body = JSON.stringify({ type: "event_callback", event: { type: "reaction_added" } });
     const res = await handler(makeEvent({ body }), {} as any, {} as any);
