@@ -135,7 +135,7 @@ export class SqliteAuditStore implements AuditStore {
     const rows = this.db
       .select()
       .from(schema.auditLog)
-      .orderBy(desc(schema.auditLog.created_at))
+      .orderBy(desc(schema.auditLog.created_at), desc(schema.auditLog.id))
       .limit(limit)
       .all();
     return rows.map(toAuditRecord);
@@ -151,7 +151,7 @@ export class SqliteAuditStore implements AuditStore {
           eq(schema.auditLog.thread_ts, thread_ts)
         )
       )
-      .orderBy(desc(schema.auditLog.created_at))
+      .orderBy(desc(schema.auditLog.created_at), desc(schema.auditLog.id))
       .all();
     return rows.map(toAuditRecord);
   }

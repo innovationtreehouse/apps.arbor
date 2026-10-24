@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createStores } from "../create-stores.js";
 import type { StoreSet } from "../create-stores.js";
 
@@ -135,6 +135,18 @@ describe("SqliteAuditStore", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].thread_ts).toBe("1.0");
     expect(rows[0].channel).toBe("C1");
+  });
+
+  it("breaks created_at ties by id, newest first", async () => {
+    vi.useFakeTimers({ now: new Date("2026-01-01T00:00:00Z"), toFake: ["Date"] });
+    try {
+      await stores.auditStore.write({ ...record, prompt: "first" });
+      await stores.auditStore.write({ ...record, prompt: "second" });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect((await stores.auditStore.listRecent(10)).map((r) => r.prompt)).toEqual(["second", "first"]);
+    expect((await stores.auditStore.listByThread("C1", "1.0")).map((r) => r.prompt)).toEqual(["second", "first"]);
   });
 });
 

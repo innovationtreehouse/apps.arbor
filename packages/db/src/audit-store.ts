@@ -29,7 +29,7 @@ export class PostgresAuditStore implements AuditStore {
     const rows = await this.db
       .select()
       .from(auditLog)
-      .orderBy(desc(auditLog.created_at))
+      .orderBy(desc(auditLog.created_at), desc(auditLog.id))
       .limit(limit);
     return rows.map(toRecord);
   }
@@ -39,7 +39,7 @@ export class PostgresAuditStore implements AuditStore {
       .select()
       .from(auditLog)
       .where(and(eq(auditLog.channel, channel), eq(auditLog.thread_ts, thread_ts)))
-      .orderBy(desc(auditLog.created_at));
+      .orderBy(desc(auditLog.created_at), desc(auditLog.id));
     return rows.map(toRecord);
   }
 }
