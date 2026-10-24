@@ -16,10 +16,16 @@ if [ -n "$SERVICE_ACCOUNT_PATH" ]; then
   echo "[entrypoint] Starting gdrive MCP proxy on port ${PROXY_PORT} (restarted if it exits)..."
   (
     set +e  # a crashed proxy must not end the restart loop
+    delay=5
     while true; do
+      started=$(date +%s)
       node /app/packages/agent/dist/gdrive-mcp-proxy.js
-      echo "[entrypoint] gdrive proxy exited ($?); restarting in 5s"
-      sleep 5
+      code=$?
+      # Back off 5s doubling to 60s; a proxy that ran a while resets the backoff.
+      if [ $(( $(date +%s) - started )) -ge 300 ]; then delay=5; fi
+      echo "[entrypoint] gdrive proxy exited ($code); restarting in ${delay}s"
+      sleep "$delay"
+      delay=$(( delay * 2 > 60 ? 60 : delay * 2 ))
     done
   ) &
 
