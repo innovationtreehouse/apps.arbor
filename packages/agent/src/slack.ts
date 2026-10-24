@@ -3,6 +3,9 @@ import type { SlackMessage } from "./prompt.js";
 
 const client = new WebClient(process.env.SLACK_BOT_TOKEN);
 
+// Slack rejects messages over 4000 chars; replies are cut to this length.
+export const SLACK_MAX_CHARS = 3900;
+
 const THREAD_HISTORY_LIMIT = parseInt(
   process.env.THREAD_HISTORY_LIMIT ?? "50",
   10
@@ -46,9 +49,8 @@ export async function postMessage(
   threadTs: string,
   text: string
 ): Promise<void> {
-  // Slack blocks messages over 4000 chars; truncate with an indicator
   const truncated =
-    text.length > 3900 ? text.slice(0, 3897) + "…" : text;
+    text.length > SLACK_MAX_CHARS ? text.slice(0, SLACK_MAX_CHARS - 3) + "…" : text;
 
   await client.chat.postMessage({
     channel,

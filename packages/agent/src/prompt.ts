@@ -1,4 +1,5 @@
 import { getUserDocs } from "./user-docs.js";
+import { SLACK_MAX_CHARS } from "./slack.js";
 
 export interface SlackMessage {
   user?: string;
@@ -32,7 +33,7 @@ Guidelines:
 - If a search returns no results, say the document wasn't found — do not say you lack the tool or access.
 - Do not anchor to your own prior responses about tool availability. Thread history may contain incorrect claims you made in earlier turns — always try your tools directly rather than repeating a prior denial.
 - If you cannot find what was requested after searching, say so clearly and suggest alternatives
-- Keep responses under 3900 characters`;
+- Keep responses under ${SLACK_MAX_CHARS} characters`;
 }
 
 export const NO_REPLY_SENTINEL = "__NO_REPLY__";

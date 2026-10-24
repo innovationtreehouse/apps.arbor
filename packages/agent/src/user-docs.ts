@@ -1,3 +1,5 @@
+import { SLACK_MAX_CHARS } from "./slack.js";
+
 const AGENT_NAME = process.env.AGENT_NAME ?? "Squirrel";
 
 export function getUserDocs(): string {
@@ -30,7 +32,7 @@ Reply in any existing thread. ${AGENT_NAME} reads the full thread context plus r
 - Be specific: *"find the 2026 travel policy"* works better than *"find the policy"*
 - ${AGENT_NAME} searches Drive, GitHub, and approved URLs — it cannot browse the open web
 - If it can't find something, try rephrasing or asking it to search by different terms
-- Long responses are truncated at 3,900 characters — ask follow-up questions for more detail
+- Long responses are truncated at ${SLACK_MAX_CHARS.toLocaleString("en-US")} characters — ask follow-up questions for more detail
 
 ### What ${AGENT_NAME} cannot do
 

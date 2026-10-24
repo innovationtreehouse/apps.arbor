@@ -8,12 +8,10 @@ import { createAuditLogger } from "@arbor/logger";
 import { fetchChannelHistory, fetchThreadHistory, fetchSlackImages, postMessage, postEphemeral } from "./slack.js";
 import type { SlackFile } from "./slack.js";
 import { runAgent } from "./agent.js";
-import { buildPrompt, buildSystemPrompt } from "./prompt.js";
+import { buildPrompt, buildSystemPrompt, NO_REPLY_SENTINEL } from "./prompt.js";
 import { BatchBuffer, type BatchEvent } from "./batch-buffer.js";
 import { processAdminCommand } from "./admin.js";
 import { providerEnv } from "./provider.js";
-
-export const NO_REPLY_SENTINEL = "__NO_REPLY__";
 
 export type SlackEvent = BatchEvent & {
   holdoff?: boolean;

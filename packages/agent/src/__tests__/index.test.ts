@@ -52,6 +52,7 @@ vi.mock("../agent.js", () => ({
 vi.mock("../prompt.js", () => ({
   buildPrompt: vi.fn().mockReturnValue("built prompt"),
   buildSystemPrompt: vi.fn().mockReturnValue("system prompt"),
+  NO_REPLY_SENTINEL: "__NO_REPLY__",
 }));
 
 const sqsMock = mockClient(SQSClient);
