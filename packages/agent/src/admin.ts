@@ -109,7 +109,9 @@ async function handleAdd(args: string[], userId: string, urlStore: UrlStore): Pr
 
 async function handleRemove(args: string[], urlStore: UrlStore): Promise<string> {
   if (args.length < 1) return "Usage: `/squirrel-admin remove <url>`";
-  await urlStore.delete(args[0]);
+  // `add` stores "<url>*", so accept the URL as typed with or without the star.
+  const bare = args[0].replace(/\*$/, "");
+  await Promise.all([urlStore.delete(bare), urlStore.delete(`${bare}*`)]);
   return `✅ Removed: *${args[0]}*`;
 }
 
