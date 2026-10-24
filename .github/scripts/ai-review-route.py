@@ -155,7 +155,7 @@ def api(repo, path):
 
 
 def pr_state(pr, repo):
-    meta = json.loads(gh("pr", "view", pr, "-R", repo, "--json", "title,files,additions,deletions,baseRefOid,headRefOid"))
+    meta = json.loads(gh("pr", "view", pr, "-R", repo, "--json", "title,body,files,additions,deletions,baseRefOid,headRefOid"))
     files = [f["path"] for f in meta["files"]]
     # The decision model gets the whole diff; fit_rounds trims older rounds to the state cap.
     # On Jev the whole diff is cheap: over ~32 KB it only switches to a slower long-context mode.
@@ -170,8 +170,17 @@ def pr_state(pr, repo):
         except Exception as e2:
             print(f"::warning::could not read the diff ({e}; then {e2}); deciding on the file list", file=sys.stderr)
             diff = ""
+    # Human comments (issue and review) from trusted authors carry reviewer-tier requests.
+    try:
+        talk = [c for p in ("issues", "pulls") for c in api(repo, f"{p}/{pr}/comments?per_page=100")
+                if _trusted(c) and c["user"]["login"] != BOT]
+        talk = [_clean(c["body"], 1500) for c in sorted(talk, key=lambda c: c["created_at"])[-20:]]
+    except Exception as e:
+        print(f"::warning::could not read PR comments ({e}); deciding without them", file=sys.stderr)
+        talk = []
     # PR text is untrusted; it only ever appears here as data, never as instructions.
-    return files, {"untrusted_pr_title": meta["title"], "changed_files": files,
+    return files, {"untrusted_pr_title": meta["title"], "untrusted_pr_body": _clean(meta.get("body"), 8000),
+                   "untrusted_human_comments": talk, "changed_files": files,
                    "changed_lines": meta["additions"] + meta["deletions"], "file_count": len(files),
                    "untrusted_diff": diff}
 
@@ -308,6 +317,9 @@ def rerun_gate(probs, higher, p):
 
 
 def route_selftest():
+    ask = lambda b, *c: tier_request({"untrusted_pr_body": b, "untrusted_human_comments": list(c)})
+    assert ask("Please run the Argon lane") and ask("", "can we get a higher tier review?") and ask("a", "top review please")
+    assert not ask("Fix typo in the highway docs", "LGTM") and not ask("")
     assert pick({"free": 0.02, "mid": 0.6, "high": 0.38}, ORDER) == "free"
     assert pick({"free": 0.0, "mid": 0.7, "high": 0.3}, ORDER) == "mid"
     assert pick({"free": 0.0, "mid": 0.05, "high": 0.9, "top": 0.05}, ORDER) == "high"
@@ -532,6 +544,14 @@ def first_round(pr, repo):
         return False
 
 
+# Logging and the first-round gate only; the decision model judges the request itself.
+REQUEST_RE = re.compile(r"argon|\btier\b|\b(?:high|top|mid|higher|stronger)\W+review|review\w*\W+(?:lane|tier)", re.I)
+
+
+def tier_request(state):
+    return bool(REQUEST_RE.search(" ".join([state.get("untrusted_pr_body") or ""] + (state.get("untrusted_human_comments") or []))))
+
+
 def route():
     pr, repo = os.environ["PR_NUMBER"], os.environ["GITHUB_REPOSITORY"]
     profiles = json.load(open(f"{CFG}/profiles.json"))
@@ -557,14 +577,18 @@ def route():
     suggested = ladder(chosen, state["changed_lines"], state["file_count"])
     # A high-ladder PR (risky profile, several profiles, very large) keeps normal routing: later
     # rounds only verify, so the first round is its only full sweep.
-    if (os.environ.get("FIRST_ROUND_LOWEST", "").strip().lower() == "true"
-            and suggested != "high" and first_round(pr, repo)):
+    asked = tier_request(state)
+    lowest = (os.environ.get("FIRST_ROUND_LOWEST", "").strip().lower() == "true"
+              and suggested != "high" and first_round(pr, repo))
+    if lowest and not asked:
         tier, t_by, tier_probs = ORDER[0], "first round, FIRST_ROUND_LOWEST is set", None
     else:
         try:
             a = jev(dict(state, review_profiles_that_apply=chosen, guidance_ladder_suggests=suggested), {
                 "reviewer": {"type": "choice",
-                             "instructions": "Which reviewer should review this pull request? Cost matters: pick the cheapest reviewer that will reliably catch real bugs in this change. Moving up a tier needs strong evidence that the cheaper reviewer would miss something serious.",
+                             "instructions": "Which reviewer should review this pull request? Cost matters: pick the cheapest reviewer that will reliably catch real bugs in this change. Moving up a tier needs strong evidence that the cheaper reviewer would miss something serious. "
+                             "If the PR description or a human comment asks for a specific or higher reviewer tier, default to granting it. Never go lower than the tier you would otherwise pick. Reject the request only when it is absurd for the change, for example a one-word, comment-only or whitespace change asking for the high or top tier."
+                             + (" This is the PR's first review: prefer the lowest tier unless the description or a comment asks for a higher one." if lowest else ""),
                              "criteria": rung_choice(ORDER)}})["reviewer"]
             tier_probs = {k: round(v, 3) for k, v in a["probabilities"].items()}
             tier = pick(a["probabilities"], ORDER)
@@ -589,10 +613,11 @@ def route():
     instructions, rerun_instructions = base + note + history, base + history
     summary = (f"profiles={chosen} (path hint {hits}; {p_by})\n"
                f"tier={tier} model={model} (ladder suggested {suggested}; {t_by})\n"
+               f"tier request phrase in PR text: {asked}\n"
                f"prompt: {len(instructions.encode())} bytes including review history")
     print(summary)
     log_decision("route", path_hint=hits, profile_probs=probs, profiles=chosen, suggested=suggested,
-                 tier_probs=tier_probs, tier=tier, model=model, changed_lines=state["changed_lines"],
+                 tier_probs=tier_probs, tier=tier, tier_request=asked, model=model, changed_lines=state["changed_lines"],
                  files=state["file_count"], credit_override=credit_override)
     with open(os.environ["GITHUB_OUTPUT"], "a") as o:
         o.write(f"tier={tier}\nmodel={model}\nmax_tool_turns={turns}\nmax_diff_kb={diff_kb}\neffort={effort}\n")
